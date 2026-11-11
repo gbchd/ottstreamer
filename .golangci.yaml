@@ -1,0 +1,97 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - contextcheck
+    - copyloopvar
+    - depguard
+    - dupl
+    - durationcheck
+    - errname
+    - errorlint
+    - exhaustive
+    - fatcontext
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - nolintlint
+    - prealloc
+    - revive
+    - sloglint
+    - sqlclosecheck
+    - unconvert
+    - unparam
+    - whitespace
+
+  settings:
+    depguard:
+      rules:
+        domain:
+          files:
+            - "**/internal/timeline/*.go"
+            - "**/internal/stream/*.go"
+            - "**/internal/adbreak/*.go"
+            - "**/internal/live/*.go"
+          deny:
+            - pkg: database/sql
+              desc: storage belongs in an adapter subpackage such as stream/streammem
+            - pkg: net/http
+              desc: transport belongs in an adapter subpackage or internal/api
+            - pkg: encoding/json
+              desc: wire formats belong in an adapter subpackage
+            - pkg: ottstreamer/internal/config
+              desc: pass values through constructors instead
+    gocyclo:
+      min-complexity: 15
+    dupl:
+      threshold: 150
+    exhaustive:
+      default-signifies-exhaustive: true
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+    revive:
+      rules:
+        - name: unused-parameter
+          arguments:
+            - allow-regex: "^_"
+    sloglint:
+      msg-style: lowercased
+      no-global: all
+      context: all
+
+  exclusions:
+    generated: strict
+    presets:
+      - comments
+      - std-error-handling
+      - common-false-positives
+      - legacy
+    paths:
+      - internal/api/api.gen.go
+    rules:
+      # relax noisy checks in tests
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - dupl
+          - gosec
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
+  exclusions:
+    paths:
+      - internal/api/api.gen.go
