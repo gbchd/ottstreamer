@@ -5,6 +5,7 @@ package liveffmpeg
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -35,6 +38,9 @@ type Encoder struct {
 	font   string
 	sem    chan struct{}
 	logger *slog.Logger
+
+	mu       sync.Mutex
+	overlays map[string]bool // overlay cycle files already rendered
 }
 
 // NewEncoder checks that ffmpegPath runs and writes the Go Mono font into
@@ -54,7 +60,7 @@ func NewEncoder(ffmpegPath, tmpDir string, maxProcs int, logger *slog.Logger) (*
 	if err := os.WriteFile(font, gomono.TTF, 0o600); err != nil {
 		return nil, fmt.Errorf("write font: %w", err)
 	}
-	return &Encoder{ffmpeg: path, tmpDir: tmpDir, font: font, sem: make(chan struct{}, maxProcs), logger: logger}, nil
+	return &Encoder{ffmpeg: path, tmpDir: tmpDir, font: font, sem: make(chan struct{}, maxProcs), logger: logger, overlays: map[string]bool{}}, nil
 }
 
 // EncodeSegment encodes video segment n of s's current epoch for every
@@ -126,9 +132,13 @@ func (e *Encoder) encodeVideo(ctx context.Context, s stream.Stream, n int64, inA
 	}
 	defer os.RemoveAll(dir) // best effort: scratch files only
 
+	overlays, err := e.overlayFile(ctx, ep.Spec)
+	if err != nil {
+		return nil, err
+	}
 	tl := ep.Timeline()
 	timeout := max(2*tl.SegDuration(), 10*time.Second)
-	if err := e.run(ctx, timeout, buildVideoArgs(*ep, n, loc, inAd, e.font, dir)); err != nil {
+	if err := e.run(ctx, timeout, buildVideoArgs(*ep, n, loc, inAd, e.font, overlays, dir)); err != nil {
 		return nil, fmt.Errorf("segment %d: %w", n, err)
 	}
 	files := make(map[string]*mp4.File, len(ep.Spec.Video))
@@ -143,6 +153,23 @@ func (e *Encoder) encodeVideo(ctx context.Context, s stream.Stream, n int64, inA
 		files[v.ID] = f
 	}
 	return files, nil
+}
+
+// overlayFile returns the overlay cycle file for spec, rendering it on first
+// use. Streams with the same picture geometry, fps and beep share one file.
+func (e *Encoder) overlayFile(ctx context.Context, spec stream.Spec) (string, error) {
+	sum := sha256.Sum256([]byte(strings.Join(buildOverlayArgs(spec, ""), "\x00")))
+	path := filepath.Join(e.tmpDir, fmt.Sprintf("overlays-%x.nut", sum[:8]))
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.overlays[path] {
+		return path, nil
+	}
+	if err := e.run(ctx, 30*time.Second, buildOverlayArgs(spec, path)); err != nil {
+		return "", fmt.Errorf("overlays: %w", err)
+	}
+	e.overlays[path] = true
+	return path, nil
 }
 
 func checkVideo(ss []live.Sample, want int64) error {

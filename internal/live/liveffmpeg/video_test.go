@@ -44,7 +44,7 @@ func TestBuildVideoArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := buildVideoArgs(*s.Status.Epoch, 7, paris, true, "/tmp/x/GoMono.ttf", "/tmp/x/seg")
+	args := buildVideoArgs(*s.Status.Epoch, 7, paris, true, "/tmp/x/GoMono.ttf", "/tmp/x/ov.nut", "/tmp/x/seg")
 	t.Log("ffmpeg '" + strings.Join(args, "' '") + "'")
 
 	// flag returns the values following every occurrence of name.
@@ -87,10 +87,10 @@ func TestBuildVideoArgs(t *testing.T) {
 	graph := flag("-filter_complex")[0]
 	for _, want := range []string{
 		"lutyuv=y=63:u=102:v=240", // red background in an ad
-		"(N+175)", "(n+175)",      // frame 7*25 since AST
-		"geq=lum=", "split=2[s0][s1]", "scale=160:90",
-		"90p · 160×90 · 150 kbit/s",                   // per-branch label
-		"if(mod(floor((N+175)/25)\\,2)\\,480\\,1500)", // tic/toc Hz of the first audio track
+		"(n+175)",                 // frame 7*25 since AST
+		"trim=start_frame=25",     // 175 mod 2*25 into the overlay cycle
+		"split=2[s0][s1]", "scale=160:90",
+		"90p · 160×90 · 150 kbit/s", // per-branch label
 	} {
 		if !strings.Contains(graph, want) {
 			t.Errorf("filter graph lacks %q", want)
@@ -98,6 +98,25 @@ func TestBuildVideoArgs(t *testing.T) {
 	}
 	if strings.Contains(graph, "scale=320:180") {
 		t.Error("top rendition is scaled")
+	}
+}
+
+func TestBuildOverlayArgs(t *testing.T) {
+	s := testStream(t)
+	args := buildOverlayArgs(s.Spec, "/tmp/x/ov.nut")
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"color=c=black:s=66x66:r=25",            // disc 0.37·180
+		"color=c=black:s=320x6:r=25",            // strip
+		"if(mod(floor(N/25)\\,2)\\,480\\,1500)", // tic/toc Hz of the first audio track
+		"-frames:v 50", "-c:v ffv1",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("overlay args lack %q", want)
+		}
+	}
+	if args[len(args)-1] != "/tmp/x/ov.nut" {
+		t.Errorf("last arg = %s", args[len(args)-1])
 	}
 }
 

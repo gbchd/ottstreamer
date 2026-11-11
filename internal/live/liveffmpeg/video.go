@@ -13,23 +13,65 @@ import (
 // barColours are the 75% SMPTE bars: grey, yellow, cyan, green, magenta, red, blue.
 var barColours = []string{"0xBFBFBF", "0xBFBF00", "0x00BFBF", "0x00BF00", "0xBF00BF", "0xBF0000", "0x0000BF"}
 
+// geometry returns the sweep disc's diameter, the waveform strip's height
+// and the colour bars' inset for a top rendition h pixels tall.
+func geometry(h int) (disc, strip, inset int) {
+	return even((h*37 + 50) / 100), even(max(h/34, 6)), max(h/68, 2)
+}
+
+// buildOverlayArgs returns the ffmpeg arguments that render one cycle of the
+// sweep disc and the waveform strip to out: two lossless FFV1 streams of
+// 2·fps frames, frame i showing frame f of any second pair with f ≡ i mod
+// 2·fps. Both pictures depend on nothing else, so segments replay this file
+// instead of evaluating geq per pixel, which cost more than x264 did.
+func buildOverlayArgs(spec stream.Spec, out string) []string {
+	fps := spec.FPS
+	w, h := spec.Video[0].Width, spec.Video[0].Height
+	disc, strip, _ := geometry(h)
+	odd := fmt.Sprintf("mod(floor(N/%d),2)", fps)
+
+	// Sweep disc: a wedge from 12 o'clock completes a turn per second; the
+	// two greys swap every second.
+	r := disc / 2
+	discLum := fmt.Sprintf("if(lt(mod(atan2(X-%[1]d,%[1]d-Y)+2*PI,2*PI),2*PI*mod(N,%[2]d)/%[2]d),if(%[3]s,240,102),if(%[3]s,102,240))",
+		r, fps, odd)
+	discAlpha := fmt.Sprintf("if(lt(hypot(X-%[1]d+0.5,Y-%[1]d+0.5),%[1]d),255,0)", r)
+
+	// Waveform strip: the beep as it sounds during frame 0 of a second (Hz/fps
+	// cycles across the width), a flat line otherwise.
+	tic, toc := beepHz(spec)
+	hz := fmt.Sprintf("if(%s,%d,%d)", odd, tic, toc)
+	waveAlpha := fmt.Sprintf("if(lt(abs(Y-%d-eq(mod(N,%d),0)*%d*sin(2*PI*%s*X/(W*%d))),1.5),255,0)",
+		strip/2, fps, strip/2-2, hz, fps)
+
+	color := func(cw, ch int) string { return fmt.Sprintf("color=c=black:s=%dx%d:r=%d", cw, ch, fps) }
+	return []string{
+		"-hide_banner", "-nostdin", "-v", "error", "-y",
+		"-f", "lavfi", "-i", color(disc, disc),
+		"-f", "lavfi", "-i", color(w, strip),
+		"-filter_complex", strings.Join([]string{
+			fmt.Sprintf("[0:v]format=yuva420p,geq=lum=%s:cb=128:cr=128:a=%s[disc]", quote(discLum), quote(discAlpha)),
+			fmt.Sprintf("[1:v]format=yuva420p,geq=lum=230:cb=128:cr=128:a=%s[wave]", quote(waveAlpha)),
+		}, ";"),
+		"-map", "[disc]", "-map", "[wave]", "-frames:v", strconv.Itoa(2 * fps),
+		"-c:v", "ffv1", "-f", "nut", out,
+	}
+}
+
 // buildVideoArgs returns the ffmpeg arguments that draw segment n of epoch e
 // once at the top rendition's size (see "Content generation" in the spec),
 // scale it to every rendition and write <dir>/<rendition id>.mp4 each. The
-// clock shows local time in loc.
-func buildVideoArgs(e stream.Epoch, n int64, loc *time.Location, inAd bool, font, dir string) []string {
+// clock shows local time in loc; overlays is the output of buildOverlayArgs.
+func buildVideoArgs(e stream.Epoch, n int64, loc *time.Location, inAd bool, font, overlays, dir string) []string {
 	spec := e.Spec
 	tl := e.Timeline()
 	fps := spec.FPS
 	top := spec.Video[0]
 	w, h := top.Width, top.Height
-	disc := even((h*37 + 50) / 100)
-	strip := even(max(h/34, 6))
-	inset := max(h/68, 2)
+	disc, strip, inset := geometry(h)
 
-	// Frame f counts from AST; drawtext and enable see it as n, geq as N.
+	// Frame f counts from AST; drawtext and enable see it as n.
 	ff := fmt.Sprintf("(n+%d)", tl.FirstFrame(n))
-	geqFF := fmt.Sprintf("(N+%d)", tl.FirstFrame(n))
 	odd := func(f string) string { return fmt.Sprintf("mod(floor(%s/%d),2)", f, fps) }
 	beep := func(f string) string { return fmt.Sprintf("eq(mod(%s,%d),0)", f, fps) }
 
@@ -37,20 +79,8 @@ func buildVideoArgs(e stream.Epoch, n int64, loc *time.Location, inAd bool, font
 	if inAd {
 		bg = "y=63:u=102:v=240" // BT.709 red
 	}
-
-	// Sweep disc: a wedge from 12 o'clock completes a turn per second; the
-	// two greys swap every second.
-	r := disc / 2
-	discLum := fmt.Sprintf("if(lt(mod(atan2(X-%[1]d,%[1]d-Y)+2*PI,2*PI),2*PI*mod(%[2]s,%[3]d)/%[3]d),if(%[4]s,240,102),if(%[4]s,102,240))",
-		r, geqFF, fps, odd(geqFF))
-	discAlpha := fmt.Sprintf("if(lt(hypot(X-%[1]d+0.5,Y-%[1]d+0.5),%[1]d),255,0)", r)
-
-	// Waveform strip: the beep as it sounds during frame 0 of a second (Hz/fps
-	// cycles across the width), a flat line otherwise.
-	tic, toc := beepHz(spec)
-	hz := fmt.Sprintf("if(%s,%d,%d)", odd(geqFF), tic, toc)
-	waveAlpha := fmt.Sprintf("if(lt(abs(Y-%d-%s*%d*sin(2*PI*%s*X/(W*%d))),1.5),255,0)",
-		strip/2, beep(geqFF), strip/2-2, hz, fps)
+	// The overlay cycle, looped, from the frame this segment starts on.
+	replay := fmt.Sprintf("trim=start_frame=%d,setpts=N/(%d*TB)", tl.FirstFrame(n)%int64(2*fps), fps)
 
 	text := func(opts string) string { return "drawtext=fontfile=" + quote(font) + ":" + opts }
 	chain := make([]string, 0, 1+len(barColours)+4)
@@ -90,19 +120,17 @@ func buildVideoArgs(e stream.Epoch, n int64, loc *time.Location, inAd bool, font
 
 	graph := strings.Join(append([]string{
 		"[0:v]format=yuv420p,lutyuv=" + bg + "[bg]",
-		fmt.Sprintf("[1:v]format=yuva420p,geq=lum=%s:cb=128:cr=128:a=%s[disc]", quote(discLum), quote(discAlpha)),
-		fmt.Sprintf("[2:v]format=yuva420p,geq=lum=230:cb=128:cr=128:a=%s[wave]", quote(waveAlpha)),
+		"[1:v:0]" + replay + "[disc]",
+		"[1:v:1]" + replay + "[wave]",
 		fmt.Sprintf("[bg][disc]overlay=x=%d:y=%d[d]", (w-disc)/2, (h-disc)/2),
 		fmt.Sprintf("[d][wave]overlay=x=0:y=%d,%s,%s", h-inset-strip-strip, strings.Join(chain, ","), split),
 	}, branches...), ";")
 
-	color := func(cw, ch int) string { return fmt.Sprintf("color=c=black:s=%dx%d:r=%d", cw, ch, fps) }
-	args := make([]string, 0, 18+35*len(spec.Video))
+	args := make([]string, 0, 16+35*len(spec.Video))
 	args = append(args,
 		"-hide_banner", "-nostdin", "-v", "error",
-		"-f", "lavfi", "-i", color(w, h),
-		"-f", "lavfi", "-i", color(disc, disc),
-		"-f", "lavfi", "-i", color(w, strip),
+		"-f", "lavfi", "-i", fmt.Sprintf("color=c=black:s=%dx%d:r=%d", w, h, fps),
+		"-stream_loop", "-1", "-i", overlays,
 		"-filter_complex", graph,
 	)
 	gop := strconv.FormatInt(int64(spec.GOPDuration)*int64(fps)/int64(time.Second), 10)
