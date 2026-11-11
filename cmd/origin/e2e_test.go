@@ -23,6 +23,8 @@ import (
 	"ottstreamer/internal/apikey"
 	"ottstreamer/internal/event"
 	"ottstreamer/internal/event/eventmem"
+	"ottstreamer/internal/fault"
+	"ottstreamer/internal/fault/faultmem"
 	"ottstreamer/internal/live"
 	"ottstreamer/internal/live/liveffmpeg"
 	"ottstreamer/internal/live/livemp4"
@@ -51,9 +53,10 @@ func (c *clock) set(t time.Time) {
 }
 
 type e2e struct {
-	t     *testing.T
-	srv   *httptest.Server
-	clock *clock
+	t      *testing.T
+	srv    *httptest.Server
+	clock  *clock
+	faults *fault.Service
 }
 
 // newE2E builds the origin's graph with real adapters on a test clock.
@@ -80,9 +83,10 @@ func newE2E(t *testing.T, t0 time.Time) *e2e {
 	events := event.NewService(eventmem.NewRepository(eventsPerStream), c.now, ids.New, countEvents(met), logger)
 	t.Cleanup(events.Close)
 	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), events, c.now)
+	faults := fault.NewService(faultmem.NewRepository(), events, met, c.now, func() int { return 0 })
 	mgr := live.NewManager(enc, livemp4.NewWriter(), breaks, events, 64<<20, 2, met, c.now, logger)
 	t.Cleanup(mgr.Close)
-	streams := stream.NewService(repo, repo, mgr, breaks, events, c.now)
+	streams := stream.NewService(repo, repo, mgr, breaks, faults, events, c.now)
 	met.WatchCache(mgr)
 	auth, err := apikey.New([]string{"e2e:write:" + e2eKey})
 	if err != nil {
@@ -90,11 +94,11 @@ func newE2E(t *testing.T, t0 time.Time) *e2e {
 	}
 
 	srv := httptest.NewServer(handler(deps{
-		auth: auth, streams: streams, breaks: breaks, events: events, mgr: mgr, repo: repo,
+		auth: auth, streams: streams, breaks: breaks, events: events, faults: faults, mgr: mgr, repo: repo,
 		ready: readiness(t.Context(), repo, enc, mgr, tmp, ""), metrics: met, now: c.now, logger: logger,
 	}))
 	t.Cleanup(srv.Close)
-	return &e2e{t: t, srv: srv, clock: c}
+	return &e2e{t: t, srv: srv, clock: c, faults: faults}
 }
 
 func (e *e2e) do(method, path, body string, want int) []byte {
@@ -231,7 +235,7 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 	mpd := string(e.live("manifest.mpd"))
-	for _, want := range []string{`<InbandEventStream schemeIdUri="urn:scte:scte35:2013:bin"`, `<Event id="1" presentationTime="900000" duration="270000">`} {
+	for _, want := range []string{`<InbandEventStream schemeIdUri="urn:scte:scte35:2013:bin"`, `<Event id="1" presentationTime="900000" duration="270000">`, `/api/time?stream=e2e"`} {
 		if !strings.Contains(mpd, want) {
 			t.Errorf("MPD lacks %s:\n%s", want, mpd)
 		}
@@ -273,6 +277,8 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 
+	e.checkFaults()
+
 	// Stop: the end segment is the frozen horizon, 17.
 	e.do(http.MethodPost, "/api/streams/e2e/stop", "", http.StatusOK)
 	e.clock.set(t0.Add(30 * time.Second))
@@ -286,6 +292,8 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("ended MPD:\n%s", mpd)
 	}
 	e.live("180p/17.m4s")
+	e.clock.set(t0.Add(61 * time.Second)) // the minute of the faults is over
+	e.faults.Flush(t.Context())
 
 	prom := string(e.do(http.MethodGet, "/metrics", "", http.StatusOK))
 	for _, want := range []string{
@@ -310,6 +318,7 @@ func (e *e2e) checkEvents() {
 		"stream.created api:e2e -", "stream.started api:e2e -", "break.scheduled api:e2e 10",
 		"signal.announced system 8", "break.started system 10", "signal.cue_out system 10",
 		"break.ended system 13", "signal.cue_in system 13", "stream.stopped api:e2e 17",
+		"faults.updated api:e2e -", "fault.injected system -", "fault.injected system -", "fault.injected system -",
 	}
 	var got []string
 	// The producer records crossings on real timers, behind the test clock.
@@ -349,6 +358,9 @@ func (e *e2e) checkEvents() {
 		`ad_breaks_total{source="manual",stream="e2e",type="ended"} 1`,
 		`scte35_signals_total{source="manual",stream="e2e",type="announced"} 1`,
 		`scte35_signals_total{source="manual",stream="e2e",type="cue_in"} 1`,
+		`faults_injected_total{action="gap",rule="drop-14",stream="e2e"} 1`,
+		`faults_injected_total{action="status",rule="url-segment",stream="e2e"} 1`,
+		`faults_injected_total{action="clockSkewSeconds",rule="skew",stream="e2e"} 1`,
 	} {
 		if !strings.Contains(prom, want) {
 			t.Errorf("metrics lack %s", want)
@@ -362,5 +374,29 @@ func (e *e2e) checkEvents() {
 	}
 	if log := e.do(http.MethodGet, "/api/streams/e2e/events?types=stream.deleted", "", http.StatusOK); !bytes.Contains(log, []byte(`"actor":"api:e2e"`)) {
 		t.Errorf("no stream.deleted after delete: %s", log)
+	}
+}
+
+// checkFaults sets live rules at live edge 15: a gap on 180p segment 14 and
+// a minute of clock skew; then a URL fault hits one request only.
+func (e *e2e) checkFaults() {
+	t := e.t
+	e.do(http.MethodPut, "/api/streams/e2e/faults", `[
+  {"id": "drop-14", "match": {"kind": "segment", "renditions": ["180p"], "segments": {"from": 14, "to": 14}}, "action": {"gap": true}},
+  {"id": "skew", "match": {"kind": "time"}, "action": {"clockSkewSeconds": 60}}
+]`, http.StatusOK)
+	now := "now=" + strconv.FormatInt(e.clock.now().UnixMilli(), 10)
+	if pl := string(e.live("180p.m3u8")); !strings.Contains(pl, "#EXT-X-GAP\n180p/14.m4s?"+now) || strings.Count(pl, "#EXT-X-GAP") != 1 {
+		t.Errorf("180p.m3u8 does not mark only segment 14 as a gap:\n%s", pl)
+	}
+	if pl := string(e.live("144p.m3u8")); strings.Contains(pl, "#EXT-X-GAP") {
+		t.Errorf("144p.m3u8 has a gap:\n%s", pl)
+	}
+	e.do(http.MethodGet, "/live/e2e/180p/14.m4s?"+now, "", http.StatusNotFound)
+	e.live("144p/14.m4s")
+	e.do(http.MethodGet, "/live/e2e/144p/13.m4s?fault=503&"+now, "", http.StatusServiceUnavailable)
+	e.live("144p/13.m4s")
+	if got, want := string(e.do(http.MethodGet, "/api/time?stream=e2e", "", http.StatusOK)), "2026-11-06T18:01:16.000Z"; got != want {
+		t.Errorf("/api/time?stream=e2e = %s, want %s", got, want)
 	}
 }

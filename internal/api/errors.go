@@ -8,17 +8,25 @@ import (
 	"strings"
 
 	"ottstreamer/internal/adbreak"
+	"ottstreamer/internal/fault"
 	"ottstreamer/internal/stream"
 )
 
 // writeError is the one place that maps domain errors to status codes.
 func (s *server) writeError(w http.ResponseWriter, r *http.Request, err error) {
+	var fields []FieldError
 	if verr, ok := errors.AsType[*stream.ValidationError](err); ok {
-		body := Error{Error: err.Error()}
 		for _, f := range verr.Fields {
-			body.Fields = append(body.Fields, FieldError{Field: f.Field, Message: f.Message})
+			fields = append(fields, FieldError{Field: f.Field, Message: f.Message})
 		}
-		writeJSON(w, http.StatusUnprocessableEntity, body)
+	}
+	if verr, ok := errors.AsType[*fault.ValidationError](err); ok {
+		for _, f := range verr.Fields {
+			fields = append(fields, FieldError{Field: f.Field, Message: f.Message})
+		}
+	}
+	if fields != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, Error{Error: err.Error(), Fields: fields})
 		return
 	}
 	status := statusOf(err)
@@ -37,7 +45,7 @@ func statusOf(err error) int {
 	case errors.Is(err, stream.ErrExists), errors.Is(err, stream.ErrConflict),
 		errors.Is(err, adbreak.ErrNotRunning), errors.Is(err, adbreak.ErrConflict): // ErrConflict covers *OverlapError
 		return http.StatusConflict
-	case errors.Is(err, stream.ErrInvalid), errors.Is(err, adbreak.ErrInvalid):
+	case errors.Is(err, stream.ErrInvalid), errors.Is(err, adbreak.ErrInvalid), errors.Is(err, fault.ErrInvalid):
 		return http.StatusUnprocessableEntity
 	case errors.Is(err, stream.ErrVersionMismatch):
 		return http.StatusPreconditionFailed

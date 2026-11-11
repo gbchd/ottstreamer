@@ -82,5 +82,5 @@
       <Representation id="en-51" codecs="ac-3" audioSamplingRate="48000" bandwidth="384000"></Representation>
     </AdaptationSet>
   </Period>
-  <UTCTiming schemeIdUri="urn:mpeg:dash:utc:http-iso:2014" value="//origin.test/api/time"></UTCTiming>
+  <UTCTiming schemeIdUri="urn:mpeg:dash:utc:http-iso:2014" value="//origin.test/api/time?stream=demo"></UTCTiming>
 </MPD>

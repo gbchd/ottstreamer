@@ -147,6 +147,81 @@ func (e DASHAddressing) Valid() bool {
 	}
 }
 
+// Defines values for FaultActionStatus.
+const (
+	N404 FaultActionStatus = 404
+	N410 FaultActionStatus = 410
+	N500 FaultActionStatus = 500
+	N503 FaultActionStatus = 503
+	N504 FaultActionStatus = 504
+)
+
+// Valid indicates whether the value is a known member of the FaultActionStatus enum.
+func (e FaultActionStatus) Valid() bool {
+	switch e {
+	case N404:
+		return true
+	case N410:
+		return true
+	case N500:
+		return true
+	case N503:
+		return true
+	case N504:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for FaultMatchKind.
+const (
+	Init     FaultMatchKind = "init"
+	Master   FaultMatchKind = "master"
+	Mpd      FaultMatchKind = "mpd"
+	Playlist FaultMatchKind = "playlist"
+	Segment  FaultMatchKind = "segment"
+	Time     FaultMatchKind = "time"
+)
+
+// Valid indicates whether the value is a known member of the FaultMatchKind enum.
+func (e FaultMatchKind) Valid() bool {
+	switch e {
+	case Init:
+		return true
+	case Master:
+		return true
+	case Mpd:
+		return true
+	case Playlist:
+		return true
+	case Segment:
+		return true
+	case Time:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for FaultRuleMode.
+const (
+	Sticky    FaultRuleMode = "sticky"
+	Transient FaultRuleMode = "transient"
+)
+
+// Valid indicates whether the value is a known member of the FaultRuleMode enum.
+func (e FaultRuleMode) Valid() bool {
+	switch e {
+	case Sticky:
+		return true
+	case Transient:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SpecFormats.
 const (
 	Dash SpecFormats = "dash"
@@ -375,6 +450,83 @@ type EventPage struct {
 	Next *string `json:"next"`
 }
 
+// FaultAction One or more actions; an earlier rule wins per action when several hit
+type FaultAction struct {
+	// ClockSkewSeconds Shift the Date header and /api/time, within 24 h
+	ClockSkewSeconds float64 `json:"clockSkewSeconds,omitempty"`
+
+	// DelayMs Wait before the first byte, up to 60000; combines with other actions
+	DelayMs int `json:"delayMs,omitempty"`
+
+	// Gap 404, plus EXT-X-GAP on those segments in HLS playlists; segment and sticky only
+	Gap bool `json:"gap,omitempty"`
+
+	// Reset Close the connection without any response
+	Reset bool `json:"reset,omitempty"`
+
+	// StaleSeconds Serve the manifest as it was this long ago; playlist and mpd only
+	StaleSeconds float64 `json:"staleSeconds,omitempty"`
+
+	// Status Reply with this code and an empty body
+	Status FaultActionStatus `json:"status,omitempty"`
+
+	// ThrottleKbps Send the body at this rate
+	ThrottleKbps int `json:"throttleKbps,omitempty"`
+
+	// TruncatePercent Send only this share of the body (1-99), then close; segment and init only
+	TruncatePercent int `json:"truncatePercent,omitempty"`
+}
+
+// FaultActionStatus Reply with this code and an empty body
+type FaultActionStatus int
+
+// FaultMatch defines model for FaultMatch.
+type FaultMatch struct {
+	// Kind playlist: an HLS media playlist; master: the HLS multivariant playlist; time: /api/time?stream=<id>, clockSkewSeconds only
+	Kind FaultMatchKind `json:"kind"`
+
+	// Renditions Empty = every rendition; segment, init and playlist only
+	Renditions []string `json:"renditions,omitempty"`
+
+	// Segments Segment numbers hit, segment only; absent = every segment
+	Segments *FaultRange `json:"segments,omitempty"`
+}
+
+// FaultMatchKind playlist: an HLS media playlist; master: the HLS multivariant playlist; time: /api/time?stream=<id>, clockSkewSeconds only
+type FaultMatchKind string
+
+// FaultRange defines model for FaultRange.
+type FaultRange struct {
+	// From First segment; default 0
+	From int64 `json:"from,omitempty"`
+
+	// To Last segment, included; null = open
+	To *int64 `json:"to,omitempty"`
+}
+
+// FaultRule defines model for FaultRule.
+type FaultRule struct {
+	// Action One or more actions; an earlier rule wins per action when several hit
+	Action FaultAction `json:"action"`
+
+	// ExpiresAt When an active rule with ttlSeconds removes itself
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+	Id        string     `json:"id"`
+	Match     FaultMatch `json:"match"`
+
+	// Mode Default sticky: the same requests are hit on every retry and replica. transient: a random draw per request, so a retry may succeed
+	Mode FaultRuleMode `json:"mode,omitempty"`
+
+	// Percent Share of matching requests hit, 1-100; default 100
+	Percent int `json:"percent,omitempty"`
+
+	// TtlSeconds The rule removes itself that long after it is set; absent: it stays
+	TtlSeconds float64 `json:"ttlSeconds,omitempty"`
+}
+
+// FaultRuleMode Default sticky: the same requests are hit on every retry and replica. transient: a random draw per request, so a retry may succeed
+type FaultRuleMode string
+
 // FieldError defines model for FieldError.
 type FieldError struct {
 	// Field Example: spec.video[1].bitrateKbps
@@ -403,9 +555,12 @@ type ReplaceStreamRequest struct {
 
 // Spec defines model for Spec.
 type Spec struct {
-	Ads     Ads           `json:"ads,omitempty"`
-	Audio   []Audio       `json:"audio"`
-	Dash    DASH          `json:"dash,omitempty"`
+	Ads   Ads     `json:"ads,omitempty"`
+	Audio []Audio `json:"audio"`
+	Dash  DASH    `json:"dash,omitempty"`
+
+	// Faults 0-16 rules; seed the active rules at each start
+	Faults  []FaultRule   `json:"faults,omitempty"`
 	Formats []SpecFormats `json:"formats"`
 
 	// Fps Default 25
@@ -580,6 +735,9 @@ type StreamEventsParams struct {
 	LastEventID string `json:"Last-Event-ID,omitempty"`
 }
 
+// ReplaceFaultsJSONBody defines parameters for ReplaceFaults.
+type ReplaceFaultsJSONBody = []FaultRule
+
 // GetTimelineParams defines parameters for GetTimeline.
 type GetTimelineParams struct {
 	// From Default now minus the DVR window
@@ -587,6 +745,12 @@ type GetTimelineParams struct {
 
 	// To Default now plus the DVR window
 	To time.Time `form:"to,omitempty" json:"to,omitempty"`
+}
+
+// GetTimeParams defines parameters for GetTime.
+type GetTimeParams struct {
+	// Stream Apply the clock skew of the stream's fault rules of kind time
+	Stream string `form:"stream,omitempty" json:"stream,omitempty"`
 }
 
 // CreateStreamJSONRequestBody defines body for CreateStream for application/json ContentType.
@@ -597,6 +761,9 @@ type ReplaceStreamJSONRequestBody = ReplaceStreamRequest
 
 // CreateBreakJSONRequestBody defines body for CreateBreak for application/json ContentType.
 type CreateBreakJSONRequestBody = BreakRequest
+
+// ReplaceFaultsJSONRequestBody defines body for ReplaceFaults for application/json ContentType.
+type ReplaceFaultsJSONRequestBody = ReplaceFaultsJSONBody
 
 // StartStreamJSONRequestBody defines body for StartStream for application/json ContentType.
 type StartStreamJSONRequestBody = StartRequest
@@ -636,6 +803,15 @@ type ServerInterface interface {
 	// StreamEvents Server-Sent Events of the stream's log
 	// (GET /api/streams/{id}/events/live)
 	StreamEvents(w http.ResponseWriter, r *http.Request, id StreamID, params StreamEventsParams)
+	// ClearFaults Remove every active fault rule, at once
+	// (DELETE /api/streams/{id}/faults)
+	ClearFaults(w http.ResponseWriter, r *http.Request, id StreamID)
+	// GetFaults The active fault rules, in order, without the expired ones
+	// (GET /api/streams/{id}/faults)
+	GetFaults(w http.ResponseWriter, r *http.Request, id StreamID)
+	// ReplaceFaults Replace the active fault rules
+	// (PUT /api/streams/{id}/faults)
+	ReplaceFaults(w http.ResponseWriter, r *http.Request, id StreamID)
 	// StartStream Start a new epoch from a snapshot of the spec
 	// (POST /api/streams/{id}/start)
 	StartStream(w http.ResponseWriter, r *http.Request, id StreamID)
@@ -650,7 +826,7 @@ type ServerInterface interface {
 	GetTimeline(w http.ResponseWriter, r *http.Request, id StreamID, params GetTimelineParams)
 	// GetTime Server UTC time for DASH UTCTiming (urn:mpeg:dash:utc:http-iso:2014)
 	// (GET /api/time)
-	GetTime(w http.ResponseWriter, r *http.Request)
+	GetTime(w http.ResponseWriter, r *http.Request, params GetTimeParams)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -1095,6 +1271,84 @@ func (siw *ServerInterfaceWrapper) StreamEvents(w http.ResponseWriter, r *http.R
 	handler.ServeHTTP(w, r)
 }
 
+// ClearFaults operation middleware
+func (siw *ServerInterfaceWrapper) ClearFaults(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id StreamID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ClearFaults(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetFaults operation middleware
+func (siw *ServerInterfaceWrapper) GetFaults(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id StreamID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetFaults(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReplaceFaults operation middleware
+func (siw *ServerInterfaceWrapper) ReplaceFaults(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id StreamID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReplaceFaults(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // StartStream operation middleware
 func (siw *ServerInterfaceWrapper) StartStream(w http.ResponseWriter, r *http.Request) {
 
@@ -1231,8 +1485,27 @@ func (siw *ServerInterfaceWrapper) GetTimeline(w http.ResponseWriter, r *http.Re
 // GetTime operation middleware
 func (siw *ServerInterfaceWrapper) GetTime(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetTimeParams
+
+	// ------------- Optional query parameter "stream" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "stream", r.URL.Query(), &params.Stream, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "stream"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "stream", Err: err})
+		}
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetTime(w, r)
+		siw.Handler.GetTime(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1377,6 +1650,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/streams/{id}/events", wrapper.ListEvents)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/streams/{id}/events/live", wrapper.StreamEvents)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/streams/{id}/timeline", wrapper.GetTimeline)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/streams/{id}/faults", wrapper.ClearFaults)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/streams/{id}/faults", wrapper.GetFaults)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/api/streams/{id}/faults", wrapper.ReplaceFaults)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/time", wrapper.GetTime)
 
 	return m
@@ -2121,6 +2397,174 @@ func (response StreamEventsdefaultJSONResponse) VisitStreamEventsResponse(w http
 	return err
 }
 
+type ClearFaultsRequestObject struct {
+	Id StreamID `json:"id"`
+}
+
+type ClearFaultsResponseObject interface {
+	VisitClearFaultsResponse(w http.ResponseWriter) error
+}
+
+type ClearFaults204Response struct {
+}
+
+func (response ClearFaults204Response) VisitClearFaultsResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type ClearFaults404JSONResponse struct{ ErrorJSONResponse }
+
+func (response ClearFaults404JSONResponse) VisitClearFaultsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ClearFaultsdefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response ClearFaultsdefaultJSONResponse) VisitClearFaultsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFaultsRequestObject struct {
+	Id StreamID `json:"id"`
+}
+
+type GetFaultsResponseObject interface {
+	VisitGetFaultsResponse(w http.ResponseWriter) error
+}
+
+type GetFaults200JSONResponse []FaultRule
+
+func (response GetFaults200JSONResponse) VisitGetFaultsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFaults404JSONResponse struct{ ErrorJSONResponse }
+
+func (response GetFaults404JSONResponse) VisitGetFaultsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFaultsdefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response GetFaultsdefaultJSONResponse) VisitGetFaultsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReplaceFaultsRequestObject struct {
+	Id   StreamID `json:"id"`
+	Body *ReplaceFaultsJSONRequestBody
+}
+
+type ReplaceFaultsResponseObject interface {
+	VisitReplaceFaultsResponse(w http.ResponseWriter) error
+}
+
+type ReplaceFaults200JSONResponse []FaultRule
+
+func (response ReplaceFaults200JSONResponse) VisitReplaceFaultsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReplaceFaults404JSONResponse struct{ ErrorJSONResponse }
+
+func (response ReplaceFaults404JSONResponse) VisitReplaceFaultsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReplaceFaults422JSONResponse Error
+
+func (response ReplaceFaults422JSONResponse) VisitReplaceFaultsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReplaceFaultsdefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response ReplaceFaultsdefaultJSONResponse) VisitReplaceFaultsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type StartStreamRequestObject struct {
 	Id   StreamID `json:"id"`
 	Body *StartStreamJSONRequestBody
@@ -2378,6 +2822,7 @@ func (response GetTimelinedefaultJSONResponse) VisitGetTimelineResponse(w http.R
 }
 
 type GetTimeRequestObject struct {
+	Params GetTimeParams
 }
 
 type GetTimeResponseObject interface {
@@ -2430,6 +2875,15 @@ type StrictServerInterface interface {
 	// StreamEvents Server-Sent Events of the stream's log
 	// (GET /api/streams/{id}/events/live)
 	StreamEvents(ctx context.Context, request StreamEventsRequestObject) (StreamEventsResponseObject, error)
+	// ClearFaults Remove every active fault rule, at once
+	// (DELETE /api/streams/{id}/faults)
+	ClearFaults(ctx context.Context, request ClearFaultsRequestObject) (ClearFaultsResponseObject, error)
+	// GetFaults The active fault rules, in order, without the expired ones
+	// (GET /api/streams/{id}/faults)
+	GetFaults(ctx context.Context, request GetFaultsRequestObject) (GetFaultsResponseObject, error)
+	// ReplaceFaults Replace the active fault rules
+	// (PUT /api/streams/{id}/faults)
+	ReplaceFaults(ctx context.Context, request ReplaceFaultsRequestObject) (ReplaceFaultsResponseObject, error)
 	// StartStream Start a new epoch from a snapshot of the spec
 	// (POST /api/streams/{id}/start)
 	StartStream(ctx context.Context, request StartStreamRequestObject) (StartStreamResponseObject, error)
@@ -2795,6 +3249,91 @@ func (sh *strictHandler) StreamEvents(w http.ResponseWriter, r *http.Request, id
 	}
 }
 
+// ClearFaults operation middleware
+func (sh *strictHandler) ClearFaults(w http.ResponseWriter, r *http.Request, id StreamID) {
+	var request ClearFaultsRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ClearFaults(ctx, request.(ClearFaultsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ClearFaults")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ClearFaultsResponseObject); ok {
+		if err := validResponse.VisitClearFaultsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetFaults operation middleware
+func (sh *strictHandler) GetFaults(w http.ResponseWriter, r *http.Request, id StreamID) {
+	var request GetFaultsRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetFaults(ctx, request.(GetFaultsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetFaults")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetFaultsResponseObject); ok {
+		if err := validResponse.VisitGetFaultsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ReplaceFaults operation middleware
+func (sh *strictHandler) ReplaceFaults(w http.ResponseWriter, r *http.Request, id StreamID) {
+	var request ReplaceFaultsRequestObject
+
+	request.Id = id
+
+	var body ReplaceFaultsJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ReplaceFaults(ctx, request.(ReplaceFaultsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ReplaceFaults")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ReplaceFaultsResponseObject); ok {
+		if err := validResponse.VisitReplaceFaultsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // StartStream operation middleware
 func (sh *strictHandler) StartStream(w http.ResponseWriter, r *http.Request, id StreamID) {
 	var request StartStreamRequestObject
@@ -2911,8 +3450,10 @@ func (sh *strictHandler) GetTimeline(w http.ResponseWriter, r *http.Request, id 
 }
 
 // GetTime operation middleware
-func (sh *strictHandler) GetTime(w http.ResponseWriter, r *http.Request) {
+func (sh *strictHandler) GetTime(w http.ResponseWriter, r *http.Request, params GetTimeParams) {
 	var request GetTimeRequestObject
+
+	request.Params = params
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.GetTime(ctx, request.(GetTimeRequestObject))

@@ -2,11 +2,14 @@ package stream
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
+
+	"ottstreamer/internal/fault"
 )
 
 // Defaults filled in by Normalize.
@@ -129,6 +132,13 @@ func (s Spec) normalized(v *ValidationError) Spec {
 	c.setDefaults()
 	c.validate(v)
 	c.sortVideo()
+	rules, err := fault.Normalized(c.Faults)
+	if ferr, ok := errors.AsType[*fault.ValidationError](err); ok {
+		for _, f := range ferr.Fields {
+			v.add("spec."+f.Field, f.Message)
+		}
+	}
+	c.Faults = rules
 	return c
 }
 

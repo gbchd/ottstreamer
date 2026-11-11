@@ -284,11 +284,63 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         default: { $ref: "#/components/responses/Error" }
 
+  /api/streams/{id}/faults:
+    parameters:
+      - $ref: "#/components/parameters/StreamID"
+    get:
+      operationId: getFaults
+      summary: The active fault rules, in order, without the expired ones
+      responses:
+        "200":
+          description: The active rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/FaultRule" }
+        "404": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+    put:
+      operationId: replaceFaults
+      summary: Replace the active fault rules
+      description: |
+        Applies at once, without a restart. spec.faults only seeds the active
+        rules at each start; this call leaves it alone. A rule with ttlSeconds
+        gets an expiresAt and removes itself then.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: "#/components/schemas/FaultRule" }
+      responses:
+        "200":
+          description: The stored rules, with defaults and expiresAt
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/FaultRule" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: clearFaults
+      summary: Remove every active fault rule, at once
+      responses:
+        "204":
+          description: Cleared
+        "404": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
   /api/time:
     get:
       operationId: getTime
       summary: Server UTC time for DASH UTCTiming (urn:mpeg:dash:utc:http-iso:2014)
       security: []
+      parameters:
+        - { name: stream, in: query, schema: { type: string }, description: "Apply the clock skew of the stream's fault rules of kind time" }
       responses:
         "200":
           description: ISO 8601 UTC time with milliseconds
@@ -399,6 +451,10 @@ components:
         dash: { $ref: "#/components/schemas/DASH" }
         ads: { $ref: "#/components/schemas/Ads" }
         window: { $ref: "#/components/schemas/Window" }
+        faults:
+          type: array
+          items: { $ref: "#/components/schemas/FaultRule" }
+          description: "0-16 rules; seed the active rules at each start"
     Overlay:
       type: object
       properties:
@@ -470,6 +526,60 @@ components:
       properties:
         dvrSeconds: { type: number, format: double, description: "3 segments to 24 h; default 30" }
         retainSeconds: { type: number, format: double, description: "dvrSeconds to 24 h; default 300" }
+
+    FaultRule:
+      type: object
+      required: [id, match, action]
+      properties:
+        id: { type: string, pattern: "^[a-z0-9-]{1,40}$" }
+        match: { $ref: "#/components/schemas/FaultMatch" }
+        percent: { type: integer, description: "Share of matching requests hit, 1-100; default 100" }
+        mode:
+          type: string
+          enum: [sticky, transient]
+          description: "Default sticky: the same requests are hit on every retry and replica. transient: a random draw per request, so a retry may succeed"
+        action: { $ref: "#/components/schemas/FaultAction" }
+        ttlSeconds: { type: number, format: double, description: "The rule removes itself that long after it is set; absent: it stays" }
+        expiresAt:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          x-go-type-skip-optional-pointer: false
+          description: When an active rule with ttlSeconds removes itself
+    FaultMatch:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [segment, init, playlist, mpd, master, time]
+          description: "playlist: an HLS media playlist; master: the HLS multivariant playlist; time: /api/time?stream=<id>, clockSkewSeconds only"
+        renditions:
+          type: array
+          items: { type: string }
+          description: "Empty = every rendition; segment, init and playlist only"
+        segments:
+          allOf: [{ $ref: "#/components/schemas/FaultRange" }]
+          x-go-type-skip-optional-pointer: false
+          description: Segment numbers hit, segment only; absent = every segment
+    FaultRange:
+      type: object
+      properties:
+        from: { type: integer, format: int64, description: "First segment; default 0" }
+        to: { type: integer, format: int64, nullable: true, x-go-type-skip-optional-pointer: false, description: "Last segment, included; null = open" }
+    FaultAction:
+      type: object
+      description: One or more actions; an earlier rule wins per action when several hit
+      properties:
+        status: { type: integer, enum: [404, 410, 500, 503, 504], description: Reply with this code and an empty body }
+        delayMs: { type: integer, description: "Wait before the first byte, up to 60000; combines with other actions" }
+        throttleKbps: { type: integer, description: Send the body at this rate }
+        truncatePercent: { type: integer, description: "Send only this share of the body (1-99), then close; segment and init only" }
+        reset: { type: boolean, description: Close the connection without any response }
+        staleSeconds: { type: number, format: double, description: "Serve the manifest as it was this long ago; playlist and mpd only" }
+        gap: { type: boolean, description: "404, plus EXT-X-GAP on those segments in HLS playlists; segment and sticky only" }
+        clockSkewSeconds: { type: number, format: double, description: "Shift the Date header and /api/time, within 24 h" }
 
     Status:
       type: object

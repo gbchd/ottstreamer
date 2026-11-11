@@ -48,6 +48,7 @@ func toSpec(in Spec) stream.Spec {
 			DASHMultiPeriod:  in.Ads.DashMultiPeriod,
 		},
 		Window: stream.Window{DVR: duration(in.Window.DvrSeconds), Retain: duration(in.Window.RetainSeconds)},
+		Faults: toRules(in.Faults),
 	}
 	if r := in.Ads.Recurring; r != nil {
 		s.Ads.Recurring = &stream.Recurring{
@@ -90,6 +91,7 @@ func fromSpec(s stream.Spec) Spec {
 			DashMultiPeriod:  s.Ads.DASHMultiPeriod,
 		},
 		Window: Window{DvrSeconds: seconds(s.Window.DVR), RetainSeconds: seconds(s.Window.Retain)},
+		Faults: fromRules(s.Faults),
 		Video:  make([]Video, 0, len(s.Video)),
 		Audio:  make([]Audio, 0, len(s.Audio)),
 	}

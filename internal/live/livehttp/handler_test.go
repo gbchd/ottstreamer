@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +21,8 @@ import (
 	"ottstreamer/internal/adbreak/adbreakscte35"
 	"ottstreamer/internal/event"
 	"ottstreamer/internal/event/eventtest"
+	"ottstreamer/internal/fault"
+	"ottstreamer/internal/fault/faultmem"
 	"ottstreamer/internal/live"
 	"ottstreamer/internal/live/livehttp"
 	"ottstreamer/internal/stream"
@@ -62,15 +65,20 @@ func (fakeEncoder) EncodeSegment(_ context.Context, s stream.Stream, _ int64, _ 
 	return out, nil
 }
 
-// fakeWriter writes a readable summary of the fragment.
 type nopMetrics struct{}
 
 func (nopMetrics) SegmentBuilt(string, string, time.Duration) {}
 func (nopMetrics) SegmentLate(string)                         {}
+func (nopMetrics) FaultInjected(string, string, string)       {}
 
+// segmentWrites counts the media segments written for a request.
+var segmentWrites atomic.Int64
+
+// fakeWriter writes a readable summary of the fragment.
 type fakeWriter struct{}
 
 func (fakeWriter) WriteSegment(w io.Writer, f live.Fragment) error {
+	segmentWrites.Add(1)
 	_, err := fmt.Fprintf(w, "seq=%d tfdt=%d samples=%d", f.Seq, f.BaseTime, len(f.Samples))
 	return err
 }
@@ -148,7 +156,16 @@ func newBreak(t *testing.T, sp stream.Spec, id string, start, end, planned int64
 	return b
 }
 
-func newServer(t *testing.T) *httptest.Server {
+// newServer serves newHandler.
+func newServer(t *testing.T, rules ...fault.Rule) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(newHandler(t, rules...))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// newHandler returns the /live routes, with rules active on demo.
+func newHandler(t *testing.T, rules ...fault.Rule) http.Handler {
 	t.Helper()
 	sp := spec()
 	ts := spec()
@@ -186,11 +203,14 @@ func newServer(t *testing.T) *httptest.Server {
 	stopped.Status.State = stream.StateStopped // its runtime is still there
 	streams["stopped"] = stopped
 
+	faults := fault.NewService(faultmem.NewRepository(), &eventtest.Recorder{}, nopMetrics{}, clock, func() int { return 0 })
+	if _, err := faults.Replace(t.Context(), "demo", rules); err != nil {
+		t.Fatal(err)
+	}
+
 	mux := http.NewServeMux()
-	livehttp.NewHandler(mgr, streams, breaks, clock, logger).Register(mux)
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	return srv
+	livehttp.NewHandler(mgr, streams, breaks, faults, clock, logger).Register(mux)
+	return mux
 }
 
 type response struct {
@@ -200,6 +220,16 @@ type response struct {
 }
 
 func get(t *testing.T, srv *httptest.Server, path string, header ...string) response {
+	t.Helper()
+	r, err := fetch(t, srv, path, header...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// fetch is get that returns the transport error and what was read before it.
+func fetch(t *testing.T, srv *httptest.Server, path string, header ...string) (response, error) {
 	t.Helper()
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+path, http.NoBody)
 	if err != nil {
@@ -211,14 +241,11 @@ func get(t *testing.T, srv *httptest.Server, path string, header ...string) resp
 	}
 	res, err := srv.Client().Do(req)
 	if err != nil {
-		t.Fatal(err)
+		return response{}, err
 	}
 	defer res.Body.Close()
 	b, err := io.ReadAll(res.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return response{status: res.StatusCode, header: res.Header, body: string(b)}
+	return response{status: res.StatusCode, header: res.Header, body: string(b)}, err
 }
 
 func golden(t *testing.T, name, got string) {
@@ -382,7 +409,14 @@ func TestBadOverrides(t *testing.T) {
 
 func TestQueryPropagation(t *testing.T) {
 	srv := newServer(t)
-	q := "now=" + nowMS + "&cues=adobe"
+	for _, q := range []string{"now=" + nowMS + "&cues=adobe", "faultOn=init,segment&faultRenditions=720p&faultPercent=10&delay=1"} {
+		queryPropagates(t, srv, q)
+	}
+}
+
+// queryPropagates checks that every URL the manifests write carries q.
+func queryPropagates(t *testing.T, srv *httptest.Server, q string) {
+	t.Helper()
 	for _, path := range []string{"/live/demo/master.m3u8", "/live/demo/720p.m3u8", "/live/demo/en.m3u8"} {
 		r := get(t, srv, path+"?"+q)
 		for line := range strings.Lines(r.body) {

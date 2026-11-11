@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -206,7 +207,7 @@ func (h *Handler) mpd(r *http.Request, req request) ([]byte, error) {
 		TimeShiftBufferDepth:       iso(o.dvr),
 		SuggestedPresentationDelay: iso(3 * tl.SegDuration()),
 		MinBufferTime:              iso(tl.SegDuration()),
-		UTCTiming:                  descriptorXML{SchemeIDURI: "urn:mpeg:dash:utc:http-iso:2014", Value: "//" + r.Host + "/api/time"},
+		UTCTiming:                  descriptorXML{SchemeIDURI: "urn:mpeg:dash:utc:http-iso:2014", Value: "//" + r.Host + "/api/time?stream=" + url.QueryEscape(req.id)},
 	}
 	if tl.EndSeg >= 0 {
 		m.MediaPresentationDuration, m.MinimumUpdatePeriod = iso(time.Duration(tl.EndSeg+1)*tl.SegDuration()), ""

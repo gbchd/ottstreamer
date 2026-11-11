@@ -9,9 +9,9 @@ import (
 	"ottstreamer/internal/event"
 )
 
-// Start begins a new epoch: it freezes a snapshot of the spec and launches
-// the runtime. ast defaults to now rounded up to an even second; a given ast
-// must be on an even second.
+// Start begins a new epoch: it freezes a snapshot of the spec, makes
+// spec.faults the active fault rules and launches the runtime. ast defaults
+// to now rounded up to an even second; a given ast must be on an even second.
 func (svc *Service) Start(ctx context.Context, id string, ast *time.Time) (Stream, error) {
 	start, err := svc.ast(ast)
 	if err != nil {
@@ -23,6 +23,9 @@ func (svc *Service) Start(ctx context.Context, id string, ast *time.Time) (Strea
 	}
 	if s.Status.State == StateRunning {
 		return Stream{}, errConflict(s)
+	}
+	if _, err := svc.faults.Replace(ctx, id, s.Spec.Faults); err != nil {
+		return Stream{}, fmt.Errorf("seed faults of %s: %w", id, err)
 	}
 	wasEnded := s.Status.State == StateEnded
 	number := 1
@@ -99,6 +102,8 @@ func (svc *Service) Stop(ctx context.Context, id string) (Stream, error) {
 // Resume launches the runtime of every running or ended stream, after a
 // restart. It launches as many as it can and returns every failure.
 func (svc *Service) Resume(ctx context.Context) error {
+	// ponytail: no reseed of the fault rules, so in-memory active rules are
+	// lost on a restart; a shared FaultRepository keeps them.
 	streams, err := svc.repo.List(ctx)
 	if err != nil {
 		return err

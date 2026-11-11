@@ -2,12 +2,15 @@ package stream_test
 
 import (
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
 
 	"ottstreamer/internal/event"
+	"ottstreamer/internal/fault"
 	"ottstreamer/internal/stream"
+	"ottstreamer/internal/stream/streamtest"
 )
 
 func TestService_Start_DefaultAST(t *testing.T) {
@@ -84,6 +87,19 @@ func TestService_Start(t *testing.T) {
 	}
 	if !slices.Equal(e.rt.dropped, []string{"demo"}) {
 		t.Errorf("dropped %v", e.rt.dropped)
+	}
+}
+
+func TestService_Start_SeedsFaults(t *testing.T) {
+	e := newEnv(t)
+	spec := streamtest.Spec()
+	spec.Faults = []fault.Rule{{ID: "slow", Match: fault.Match{Kind: fault.KindSegment}, Action: fault.Action{Delay: time.Second}}}
+	if _, err := e.svc.Create(t.Context(), stream.Stream{ID: "demo", Spec: spec}); err != nil {
+		t.Fatal(err)
+	}
+	s := e.start(t, "demo")
+	if got := e.faults.replaced["demo"]; !reflect.DeepEqual(got, s.Spec.Faults) || len(got) != 1 {
+		t.Errorf("seeded %+v, want the spec's rules %+v", got, s.Spec.Faults)
 	}
 }
 

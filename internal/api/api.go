@@ -38,25 +38,23 @@ type StreamService interface {
 var _ StrictServerInterface = (*server)(nil)
 
 type server struct {
-	streams StreamService
-	breaks  BreakService
-	events  EventService
-	now     func() time.Time
-	log     *slog.Logger
+	streams  StreamService
+	breaks   BreakService
+	events   EventService
+	faults   FaultService
+	injector FaultInjector
+	now      func() time.Time
+	log      *slog.Logger
 }
 
 // Register adds every /api route of api/openapi.yaml to mux. Authentication
 // and CORS are the caller's middleware; the API key a request carries is the
 // actor of the events it causes.
-func Register(mux *http.ServeMux, streams StreamService, breaks BreakService, events EventService, now func() time.Time, logger *slog.Logger) {
-	srv := &server{streams: streams, breaks: breaks, events: events, now: now, log: logger}
+func Register(mux *http.ServeMux, streams StreamService, breaks BreakService, events EventService, faults FaultService, injector FaultInjector, now func() time.Time, logger *slog.Logger) {
+	srv := &server{streams: streams, breaks: breaks, events: events, faults: faults, injector: injector, now: now, log: logger}
 	strict := NewStrictHandlerWithOptions(srv, nil, StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  badRequest,
 		ResponseErrorHandlerFunc: srv.writeError,
 	})
 	HandlerWithOptions(strict, StdHTTPServerOptions{BaseRouter: mux, ErrorHandlerFunc: badRequest, Middlewares: []MiddlewareFunc{withActor}})
-}
-
-func (s *server) GetTime(context.Context, GetTimeRequestObject) (GetTimeResponseObject, error) {
-	return GetTime200TextResponse(s.now().UTC().Format("2006-01-02T15:04:05.000Z")), nil
 }

@@ -11,6 +11,7 @@ import (
 
 	"ottstreamer/internal/event"
 	"ottstreamer/internal/event/eventtest"
+	"ottstreamer/internal/fault"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/stream/streammem"
 	"ottstreamer/internal/stream/streamtest"
@@ -49,11 +50,27 @@ func (f *fakeBreaks) DeleteAll(_ context.Context, id string) error {
 	return nil
 }
 
+type fakeFaults struct {
+	replaced map[string][]fault.Rule
+	cleared  []string
+}
+
+func (f *fakeFaults) Replace(_ context.Context, id string, rules []fault.Rule) ([]fault.Rule, error) {
+	f.replaced[id] = rules
+	return rules, nil
+}
+
+func (f *fakeFaults) Clear(_ context.Context, id string) error {
+	f.cleared = append(f.cleared, id)
+	return nil
+}
+
 type env struct {
 	svc    *stream.Service
 	repo   *streammem.Repository
 	rt     *fakeRuntimes
 	breaks *fakeBreaks
+	faults *fakeFaults
 	events *eventtest.Recorder
 	now    time.Time
 }
@@ -64,10 +81,11 @@ func newEnv(t *testing.T) *env {
 		repo:   streammem.NewRepository(),
 		rt:     &fakeRuntimes{ended: map[string]int64{}},
 		breaks: &fakeBreaks{trimmed: map[string]int64{}},
+		faults: &fakeFaults{replaced: map[string][]fault.Rule{}},
 		events: &eventtest.Recorder{},
 		now:    t0,
 	}
-	e.svc = stream.NewService(e.repo, e.repo, e.rt, e.breaks, e.events, func() time.Time { return e.now })
+	e.svc = stream.NewService(e.repo, e.repo, e.rt, e.breaks, e.faults, e.events, func() time.Time { return e.now })
 	return e
 }
 
@@ -119,6 +137,18 @@ func TestService_Create(t *testing.T) {
 	_, err = e.svc.Create(t.Context(), stream.Stream{ID: "Bad ID", Spec: spec})
 	if got, want := fields(err), []string{"id", "spec.video[1].bitrateKbps"}; !errors.Is(err, stream.ErrInvalid) || !slices.Equal(got, want) {
 		t.Errorf("invalid: %v, fields %v, want %v", err, got, want)
+	}
+
+	spec = streamtest.Spec()
+	spec.Faults = []fault.Rule{{ID: "slow", Match: fault.Match{Kind: fault.KindSegment}, Percent: 101, Action: fault.Action{Delay: time.Second}}}
+	_, err = e.svc.Create(t.Context(), stream.Stream{ID: "faulty", Spec: spec})
+	if got, want := fields(err), []string{"spec.faults[0].percent"}; !slices.Equal(got, want) {
+		t.Errorf("invalid fault: fields %v, want %v", got, want)
+	}
+	spec.Faults[0].Percent = 0
+	s, err = e.svc.Create(t.Context(), stream.Stream{ID: "faulty", Spec: spec})
+	if err != nil || s.Spec.Faults[0].Percent != 100 || s.Spec.Faults[0].Mode != fault.ModeSticky {
+		t.Errorf("fault defaults = %+v, %v", s.Spec.Faults, err)
 	}
 }
 
@@ -175,6 +205,29 @@ func TestService_Replace_Running(t *testing.T) {
 	}
 }
 
+func TestService_Replace_RunningFaults(t *testing.T) {
+	e := newEnv(t)
+	e.create(t, "demo")
+	s := e.start(t, "demo")
+	e.events.Events()
+
+	spec := s.Spec.Clone()
+	spec.Faults = []fault.Rule{{ID: "gone", Match: fault.Match{Kind: fault.KindSegment}, Action: fault.Action{Status: 404}}}
+	s, err := e.svc.Replace(t.Context(), "demo", "demo", spec, s.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Status.PendingChanges {
+		t.Error("a faults-only edit set pendingChanges")
+	}
+	if got := e.events.Events(); len(got) != 1 || !slices.Equal(got[0].Data["fields"].([]string), []string{"spec.faults"}) {
+		t.Errorf("events %v, want stream.updated with fields [spec.faults]", got)
+	}
+	if len(e.faults.replaced["demo"]) != 0 {
+		t.Errorf("the edit changed the active rules: %v", e.faults.replaced["demo"])
+	}
+}
+
 func TestService_Delete(t *testing.T) {
 	e := newEnv(t)
 	e.create(t, "demo")
@@ -195,8 +248,8 @@ func TestService_Delete(t *testing.T) {
 	if _, err := e.svc.Get(t.Context(), "demo"); !errors.Is(err, stream.ErrNotFound) {
 		t.Errorf("Get after delete: %v", err)
 	}
-	if !slices.Equal(e.rt.dropped, []string{"demo"}) || !slices.Equal(e.breaks.deleted, []string{"demo"}) {
-		t.Errorf("dropped %v, breaks deleted %v", e.rt.dropped, e.breaks.deleted)
+	if !slices.Equal(e.rt.dropped, []string{"demo"}) || !slices.Equal(e.breaks.deleted, []string{"demo"}) || !slices.Equal(e.faults.cleared, []string{"demo"}) {
+		t.Errorf("dropped %v, breaks deleted %v, faults cleared %v", e.rt.dropped, e.breaks.deleted, e.faults.cleared)
 	}
 	if err := e.svc.Delete(t.Context(), "demo", 0); !errors.Is(err, stream.ErrNotFound) {
 		t.Errorf("delete unknown: %v, want ErrNotFound", err)
@@ -250,7 +303,7 @@ func TestService_events(t *testing.T) {
 		}
 	}
 	// changed lists the fields of Spec one by one.
-	if n := reflect.TypeFor[stream.Spec]().NumField(); n != 11 {
+	if n := reflect.TypeFor[stream.Spec]().NumField(); n != 12 {
 		t.Errorf("Spec has %d fields: add the new ones to changed in service.go, then update this count", n)
 	}
 }

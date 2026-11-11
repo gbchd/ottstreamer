@@ -54,6 +54,17 @@ curl -sN localhost:18080/api/streams/demo/events/live -H 'Authorization: Bearer 
 curl -s localhost:18080/api/streams/demo/timeline -H 'Authorization: Bearer secret'       # markers, breaks and events around now
 ```
 
+Fault rules change how responses are delivered, never the media, and apply at once. They live per stream (`spec.faults` seeds them at each start), or ride on one player's URL and are copied onto every URL its manifests write:
+
+```sh
+curl -s -X PUT localhost:18080/api/streams/demo/faults -H 'Authorization: Bearer secret' -H 'Content-Type: application/json' -d '[
+  {"id": "slow-720p", "match": {"kind": "segment", "renditions": ["720p"]}, "percent": 10, "action": {"delayMs": 3000}}
+]'
+curl -s -X DELETE localhost:18080/api/streams/demo/faults -H 'Authorization: Bearer secret'
+# one session: 5 % of segments answer 503, the same ones on every retry
+curl -s 'localhost:18080/live/demo/master.m3u8?fault=503&faultPercent=5'
+```
+
 Operations: `/healthz` answers while the process serves; `/readyz` answers 503 with the failing checks (repository, ffmpeg and its pinned version `ORIGIN_FFMPEG_VERSION`, tmp dir, producers more than 2 segments late, shutdown); `/metrics` is Prometheus. Logs are JSON on stdout, one `http request` line per request with its `request_id` (`X-Request-Id`, kept or generated).
 
 ## Development

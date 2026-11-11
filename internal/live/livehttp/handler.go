@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ottstreamer/internal/adbreak"
+	"ottstreamer/internal/fault"
 	"ottstreamer/internal/live"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/timeline"
@@ -40,18 +41,26 @@ type Breaks interface {
 	InRange(ctx context.Context, streamID string, epoch int, from, to int64) ([]adbreak.Break, error)
 }
 
+// Faults reads a stream's fault rules and decides which requests they hit.
+type Faults interface {
+	Rules(ctx context.Context, streamID string) ([]fault.Rule, error)
+	// Inject counts what it returns: call it once per request.
+	Inject(ctx context.Context, rules []fault.Rule, t fault.Target) fault.Injection
+}
+
 // Handler serves /live.
 type Handler struct {
 	runtimes Runtimes
 	streams  Streams
 	breaks   Breaks
+	faults   Faults
 	now      func() time.Time
 	logger   *slog.Logger
 }
 
 // NewHandler returns a Handler.
-func NewHandler(runtimes Runtimes, streams Streams, breaks Breaks, now func() time.Time, logger *slog.Logger) *Handler {
-	return &Handler{runtimes: runtimes, streams: streams, breaks: breaks, now: now, logger: logger}
+func NewHandler(runtimes Runtimes, streams Streams, breaks Breaks, faults Faults, now func() time.Time, logger *slog.Logger) *Handler {
+	return &Handler{runtimes: runtimes, streams: streams, breaks: breaks, faults: faults, now: now, logger: logger}
 }
 
 // Register adds the /live routes to mux. CORS is the caller's middleware.
@@ -74,11 +83,13 @@ type request struct {
 	tl     timeline.Timeline
 	window stream.Window // current, edits apply at once
 	now    time.Time
-	query  string // raw query, copied onto every URL a manifest writes
+	query  string       // raw query, copied onto every URL a manifest writes
+	rules  []fault.Rule // the stream's active rules, then the URL's
 }
 
-// resolve reads the stream, its runtime and ?now=. It fails with
-// live.ErrNotFound unless the stream is running or ended.
+// resolve reads the stream, its runtime, ?now= and the fault rules, the
+// URL's included. It fails with live.ErrNotFound unless the stream is
+// running or ended.
 func (h *Handler) resolve(r *http.Request) (request, error) {
 	id := r.PathValue("stream")
 	s, err := h.streams.Get(r.Context(), id)
@@ -113,6 +124,14 @@ func (h *Handler) resolve(r *http.Request) (request, error) {
 		}
 		req.now = time.UnixMilli(ms)
 	}
+	if req.rules, err = h.faults.Rules(r.Context(), id); err != nil {
+		return request{}, fmt.Errorf("fault rules of %s: %w", id, err)
+	}
+	session, err := urlFaults(r)
+	if err != nil {
+		return request{}, err
+	}
+	req.rules = append(req.rules, session...)
 	return req, nil
 }
 
@@ -168,14 +187,15 @@ func (h *Handler) breaksIn(ctx context.Context, req request, from, to int64) ([]
 }
 
 func (h *Handler) manifest(w http.ResponseWriter, r *http.Request) {
+	const hls, dash = "application/vnd.apple.mpegurl", "application/dash+xml"
 	file := r.PathValue("file")
 	switch {
 	case file == "master.m3u8":
-		h.serveManifest(w, r, stream.FormatHLS, "application/vnd.apple.mpegurl", h.multivariant)
+		h.serveManifest(w, r, stream.FormatHLS, hls, fault.Target{Kind: fault.KindMaster}, h.multivariant)
 	case file == "manifest.mpd":
-		h.serveManifest(w, r, stream.FormatDASH, "application/dash+xml", h.mpd)
+		h.serveManifest(w, r, stream.FormatDASH, dash, fault.Target{Kind: fault.KindMPD}, h.mpd)
 	case strings.HasSuffix(file, ".m3u8"):
-		h.serveManifest(w, r, stream.FormatHLS, "application/vnd.apple.mpegurl", h.mediaPlaylist)
+		h.serveManifest(w, r, stream.FormatHLS, hls, fault.Target{Kind: fault.KindPlaylist, Rendition: strings.TrimSuffix(file, ".m3u8")}, h.mediaPlaylist)
 	default:
 		http.NotFound(w, r)
 	}
@@ -183,7 +203,9 @@ func (h *Handler) manifest(w http.ResponseWriter, r *http.Request) {
 
 type render func(r *http.Request, req request) ([]byte, error)
 
-func (h *Handler) serveManifest(w http.ResponseWriter, r *http.Request, f stream.Format, contentType string, fn render) {
+// serveManifest renders a manifest, then applies the faults hitting t. A
+// request that fails to render gets no fault.
+func (h *Handler) serveManifest(w http.ResponseWriter, r *http.Request, f stream.Format, contentType string, t fault.Target, fn render) {
 	req, err := h.resolve(r)
 	if err == nil && !req.spec.Has(f) {
 		err = fmt.Errorf("%w: %s has no %s", live.ErrNotFound, req.id, f)
@@ -196,7 +218,21 @@ func (h *Handler) serveManifest(w http.ResponseWriter, r *http.Request, f stream
 		h.fail(w, r, err)
 		return
 	}
-	h.serve(w, r, contentType, int((req.tl.SegDuration() / 2).Seconds()), body)
+	t.Segment = req.tl.LiveEdge(req.now)
+	a, ok := h.inject(w, r, req, t)
+	if !ok {
+		return
+	}
+	if a.Stale > 0 {
+		// ponytail: a stale manifest is rendered with today's break schedule
+		// and window; keep past schedules if a test needs the exact old one.
+		req.now = req.now.Add(-a.Stale)
+		if body, err = fn(r, req); err != nil {
+			h.fail(w, r, err)
+			return
+		}
+	}
+	h.serve(w, r, a, contentType, int((req.tl.SegDuration() / 2).Seconds()), body)
 }
 
 func (h *Handler) init(w http.ResponseWriter, r *http.Request) {
@@ -211,12 +247,16 @@ func (h *Handler) init(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, fmt.Errorf("%w: rendition %s", live.ErrNotFound, rendition))
 		return
 	}
+	a, ok := h.inject(w, r, req, fault.Target{Kind: fault.KindInit, Rendition: rendition})
+	if !ok {
+		return
+	}
 	b, err := h.runtimes.Init(req.id, rendition)
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
-	h.serve(w, r, mimeType(t), int(req.window.Retain.Seconds()), b)
+	h.serve(w, r, a, mimeType(t), int(req.window.Retain.Seconds()), b)
 }
 
 func (h *Handler) segmentByNumber(w http.ResponseWriter, r *http.Request) {
@@ -251,12 +291,16 @@ func (h *Handler) segment(w http.ResponseWriter, r *http.Request, toSeg func(liv
 		http.NotFound(w, r)
 		return
 	}
+	a, ok := h.inject(w, r, req, fault.Target{Kind: fault.KindSegment, Rendition: rendition, Segment: n})
+	if !ok {
+		return
+	}
 	var buf bytes.Buffer
 	if err := h.runtimes.WriteSegment(r.Context(), &buf, req.id, rendition, n); err != nil {
 		h.fail(w, r, err)
 		return
 	}
-	h.serve(w, r, mimeType(t), int(req.window.Retain.Seconds()), buf.Bytes())
+	h.serve(w, r, a, mimeType(t), int(req.window.Retain.Seconds()), buf.Bytes())
 }
 
 func mimeType(t live.Track) string {
@@ -266,10 +310,18 @@ func mimeType(t live.Track) string {
 	return "audio/mp4"
 }
 
-// serve writes body with Range support (206).
-func (*Handler) serve(w http.ResponseWriter, r *http.Request, contentType string, maxAge int, body []byte) {
+// serve writes body with Range support (206), throttled or truncated as a
+// says.
+func (*Handler) serve(w http.ResponseWriter, r *http.Request, a fault.Action, contentType string, maxAge int, body []byte) {
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "max-age="+strconv.Itoa(maxAge))
+	if a.ThrottleKbps > 0 {
+		w = throttled{ResponseWriter: w, ctx: r.Context(), bps: a.ThrottleKbps * 1000 / 8}
+	}
+	if a.TruncatePercent > 0 {
+		truncate(w, body, a.TruncatePercent)
+		return
+	}
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(body))
 }
 

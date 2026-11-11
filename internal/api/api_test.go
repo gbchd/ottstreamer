@@ -17,6 +17,8 @@ import (
 	"ottstreamer/internal/api"
 	"ottstreamer/internal/event"
 	"ottstreamer/internal/event/eventmem"
+	"ottstreamer/internal/fault"
+	"ottstreamer/internal/fault/faultmem"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/stream/streammem"
 	"ottstreamer/internal/ulid"
@@ -29,6 +31,10 @@ type nopRuntimes struct{}
 func (nopRuntimes) Launch(context.Context, stream.Stream) error { return nil }
 func (nopRuntimes) End(string, int64)                           {}
 func (nopRuntimes) Drop(string)                                 {}
+
+type nopMetrics struct{}
+
+func (nopMetrics) FaultInjected(string, string, string) {}
 
 const demoSpec = `{
   "formats": ["hls", "dash"],
@@ -56,9 +62,10 @@ func serve(t *testing.T, wrap func(http.Handler) http.Handler) (*httptest.Server
 	logger := slog.New(slog.DiscardHandler)
 	events := event.NewService(eventmem.NewRepository(100), clock, ids.New, func(event.Event) {}, logger)
 	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), events, clock)
-	svc := stream.NewService(repo, repo, nopRuntimes{}, breaks, events, clock)
+	faults := fault.NewService(faultmem.NewRepository(), events, nopMetrics{}, clock, func() int { return 0 })
+	svc := stream.NewService(repo, repo, nopRuntimes{}, breaks, faults, events, clock)
 	mux := http.NewServeMux()
-	api.Register(mux, svc, breaks, events, clock, logger)
+	api.Register(mux, svc, breaks, events, faults, faults, clock, logger)
 	srv := httptest.NewServer(wrap(mux))
 	t.Cleanup(srv.Close)
 	t.Cleanup(events.Close) // ends event streams, so that srv.Close does not wait for them

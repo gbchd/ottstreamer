@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,6 +27,8 @@ import (
 	"ottstreamer/internal/cors"
 	"ottstreamer/internal/event"
 	"ottstreamer/internal/event/eventmem"
+	"ottstreamer/internal/fault"
+	"ottstreamer/internal/fault/faultmem"
 	"ottstreamer/internal/health"
 	"ottstreamer/internal/live"
 	"ottstreamer/internal/live/liveffmpeg"
@@ -91,13 +94,14 @@ func run(logger *slog.Logger) error {
 	var ids ulid.Generator
 	events := event.NewService(eventmem.NewRepository(eventsPerStream), time.Now, ids.New, countEvents(met), logger)
 	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), events, time.Now)
+	faults := fault.NewService(faultmem.NewRepository(), events, met, time.Now, func() int { return rand.IntN(100) }) //nolint:gosec // fault draws need no crypto
 	mgr := live.NewManager(enc, livemp4.NewWriter(), breaks, events, cfg.CacheBytes, cfg.ProducerParallelism, met, time.Now, logger)
 	defer mgr.Close() // after the server has drained, before the tmp dir goes
-	streams := stream.NewService(repo, repo, mgr, breaks, events, time.Now)
+	streams := stream.NewService(repo, repo, mgr, breaks, faults, events, time.Now)
 	if err := streams.Resume(ctx); err != nil {
 		return fmt.Errorf("resume streams: %w", err)
 	}
-	go expireEnded(ctx, streams, logger)
+	go housekeep(ctx, streams, faults, logger)
 
 	met.WatchCache(mgr)
 	met.WatchStreams(func() (map[string]int, error) { return countByState(ctx, repo) })
@@ -106,7 +110,7 @@ func run(logger *slog.Logger) error {
 	srv := &http.Server{
 		Addr: cfg.Listen,
 		Handler: handler(deps{
-			auth: auth, apiOrigins: cfg.CORSAPIOrigins, streams: streams, breaks: breaks, events: events, mgr: mgr, repo: repo,
+			auth: auth, apiOrigins: cfg.CORSAPIOrigins, streams: streams, breaks: breaks, events: events, faults: faults, mgr: mgr, repo: repo,
 			ready: ready, metrics: met, now: time.Now, logger: logger,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -135,6 +139,7 @@ type deps struct {
 	streams    *stream.Service
 	breaks     *adbreak.Service
 	events     *event.Service
+	faults     *fault.Service
 	mgr        *live.Manager
 	repo       *streammem.Repository
 	ready      http.Handler
@@ -144,14 +149,15 @@ type deps struct {
 }
 
 // handler is the request pipeline: recover > request ID, access log and
-// metrics > CORS > auth (/api except /api/time) > route.
+// metrics > CORS > auth (/api except /api/time) > route. Faults apply in the
+// /live handlers and /api/time, which know the segment a request is for.
 func handler(d deps) http.Handler {
 	apiMux := http.NewServeMux()
-	api.Register(apiMux, d.streams, d.breaks, d.events, d.now, d.logger)
+	api.Register(apiMux, d.streams, d.breaks, d.events, d.faults, d.faults, d.now, d.logger)
 	mux := http.NewServeMux()
 	mux.Handle("/api/", d.auth(accesslog.Routed(apiMux)))
 	mux.Handle("/api/time", apiMux) // open, more specific than /api/
-	livehttp.NewHandler(d.mgr, d.repo, d.breaks, d.now, d.logger).Register(mux)
+	livehttp.NewHandler(d.mgr, d.repo, d.breaks, d.faults, d.now, d.logger).Register(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	mux.Handle("GET /readyz", d.ready)
 	mux.Handle("GET /metrics", d.metrics.Handler())
@@ -215,8 +221,9 @@ func countByState(ctx context.Context, repo stream.Repository) (map[string]int, 
 	return counts, nil
 }
 
-// expireEnded moves ended streams past their retention to stopped.
-func expireEnded(ctx context.Context, streams *stream.Service, logger *slog.Logger) {
+// housekeep moves ended streams past their retention to stopped and records
+// the fault.injected events of every minute that is over.
+func housekeep(ctx context.Context, streams *stream.Service, faults *fault.Service, logger *slog.Logger) {
 	tick := time.NewTicker(10 * time.Second)
 	defer tick.Stop()
 	for {
@@ -227,6 +234,7 @@ func expireEnded(ctx context.Context, streams *stream.Service, logger *slog.Logg
 			if err := streams.ExpireEnded(ctx); err != nil {
 				logger.ErrorContext(ctx, "expire ended streams", "error", err)
 			}
+			faults.Flush(ctx)
 		}
 	}
 }

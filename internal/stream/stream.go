@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"ottstreamer/internal/fault"
 	"ottstreamer/internal/timeline"
 )
 
@@ -130,6 +131,7 @@ type Spec struct {
 	DASHAddressing  Addressing
 	Ads             Ads
 	Window          Window
+	Faults          []fault.Rule // seed the active rules at each start
 }
 
 // Has reports whether f is one of the spec's formats.
@@ -148,6 +150,7 @@ func (s Spec) Clone() Spec {
 		r := *s.Ads.Recurring
 		s.Ads.Recurring = &r
 	}
+	s.Faults = fault.Clone(s.Faults)
 	return s
 }
 

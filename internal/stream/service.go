@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ottstreamer/internal/event"
+	"ottstreamer/internal/fault"
 )
 
 // Repository stores streams.
@@ -47,6 +48,14 @@ type Breaks interface {
 	DeleteAll(ctx context.Context, streamID string) error
 }
 
+// Faults holds the active fault rules of each stream.
+type Faults interface {
+	// Replace makes rules the active rules of the stream.
+	Replace(ctx context.Context, streamID string, rules []fault.Rule) ([]fault.Rule, error)
+	// Clear removes every active rule of the stream.
+	Clear(ctx context.Context, streamID string) error
+}
+
 // Events records what happens to streams.
 type Events interface {
 	Record(ctx context.Context, e event.Event)
@@ -58,13 +67,14 @@ type Service struct {
 	del    Deleter
 	rt     Runtimes
 	breaks Breaks
+	faults Faults
 	events Events
 	now    func() time.Time
 }
 
 // NewService returns a Service.
-func NewService(repo Repository, del Deleter, rt Runtimes, br Breaks, events Events, now func() time.Time) *Service {
-	return &Service{repo: repo, del: del, rt: rt, breaks: br, events: events, now: now}
+func NewService(repo Repository, del Deleter, rt Runtimes, br Breaks, faults Faults, events Events, now func() time.Time) *Service {
+	return &Service{repo: repo, del: del, rt: rt, breaks: br, faults: faults, events: events, now: now}
 }
 
 // record records an event of s, in its current epoch if it has one.
@@ -115,7 +125,8 @@ func (svc *Service) List(ctx context.Context) ([]Stream, error) {
 
 // Replace replaces name and spec if the stream is still at version ifMatch.
 // The spec applies on the next start, except the window, which also applies
-// to the running epoch at once.
+// to the running epoch at once. Faults never touch the active rules: they
+// seed them at the next start.
 func (svc *Service) Replace(ctx context.Context, id, name string, spec Spec, ifMatch int) (Stream, error) {
 	if ifMatch == 0 {
 		return Stream{}, ErrPreconditionRequired
@@ -167,6 +178,7 @@ func changed(s Stream, name string, spec Spec) []string {
 		{"spec.ads", reflect.DeepEqual(a.Ads, spec.Ads)},
 		{"spec.window.dvrSeconds", a.Window.DVR == spec.Window.DVR},
 		{"spec.window.retainSeconds", a.Window.Retain == spec.Window.Retain},
+		{"spec.faults", slices.EqualFunc(a.Faults, spec.Faults, func(x, y fault.Rule) bool { return reflect.DeepEqual(x, y) })},
 	}
 	out := []string{}
 	for _, f := range fields {
@@ -178,13 +190,16 @@ func changed(s Stream, name string, spec Spec) []string {
 }
 
 // sameMedia reports whether a and b produce the same media: they may differ
-// only in settings that apply immediately.
+// only in settings that apply immediately, and in faults, which never change
+// the media.
 func sameMedia(a, b Spec) bool {
 	a.Window, b.Window = Window{}, Window{}
+	a.Faults, b.Faults = nil, nil
 	return reflect.DeepEqual(a, b)
 }
 
-// Delete removes a stream that is not running, with its runtime and breaks.
+// Delete removes a stream that is not running, with its runtime, breaks and
+// active fault rules.
 // ifMatch 0 skips the version check.
 func (svc *Service) Delete(ctx context.Context, id string, ifMatch int) error {
 	s, err := svc.repo.Get(ctx, id)
@@ -205,6 +220,9 @@ func (svc *Service) Delete(ctx context.Context, id string, ifMatch int) error {
 	svc.record(ctx, s, event.StreamDeleted, nil, nil)
 	if err := svc.breaks.DeleteAll(ctx, id); err != nil {
 		return fmt.Errorf("delete breaks of %s: %w", id, err)
+	}
+	if err := svc.faults.Clear(ctx, id); err != nil {
+		return fmt.Errorf("clear faults of %s: %w", id, err)
 	}
 	return nil
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ottstreamer/internal/adbreak"
+	"ottstreamer/internal/fault"
 	"ottstreamer/internal/live"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/timeline"
@@ -85,8 +86,11 @@ func (h *Handler) mediaPlaylist(r *http.Request, req request) ([]byte, error) {
 			}
 		}
 		start, dur := segTiming(tl, t, n)
-		fmt.Fprintf(&b, "#EXT-X-PROGRAM-DATE-TIME:%s\n#EXTINF:%s,\n%s\n",
-			pdt(start), strconv.FormatFloat(dur.Seconds(), 'f', 3, 64), req.url(fmt.Sprintf("%s/%d.m4s", rendition, n)))
+		fmt.Fprintf(&b, "#EXT-X-PROGRAM-DATE-TIME:%s\n#EXTINF:%s,\n", pdt(start), strconv.FormatFloat(dur.Seconds(), 'f', 3, 64))
+		if fault.Gap(req.rules, fault.Target{StreamID: req.id, Epoch: req.epoch, Kind: fault.KindSegment, Rendition: rendition, Segment: n}) {
+			b.WriteString("#EXT-X-GAP\n")
+		}
+		b.WriteString(req.url(fmt.Sprintf("%s/%d.m4s", rendition, n)) + "\n")
 	}
 	if tl.EndSeg >= 0 && last == tl.EndSeg {
 		// A stop cuts an active break at the end segment: its cue-in segment

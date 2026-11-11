@@ -12,6 +12,7 @@ import (
 	"ottstreamer/internal/adbreak"
 	"ottstreamer/internal/adbreak/adbreakmem"
 	"ottstreamer/internal/event/eventtest"
+	"ottstreamer/internal/fault"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/stream/streammem"
 	"ottstreamer/internal/stream/streamtest"
@@ -28,6 +29,13 @@ type nopRuntimes struct{}
 func (nopRuntimes) Launch(context.Context, stream.Stream) error { return nil }
 func (nopRuntimes) End(string, int64)                           {}
 func (nopRuntimes) Drop(string)                                 {}
+
+type nopFaults struct{}
+
+func (nopFaults) Replace(_ context.Context, _ string, r []fault.Rule) ([]fault.Rule, error) {
+	return r, nil
+}
+func (nopFaults) Clear(context.Context, string) error { return nil }
 
 // fakeCues encodes a cue as readable text holding every field that matters.
 type fakeCues struct{}
@@ -58,7 +66,7 @@ func newFixture(t *testing.T, edit func(*stream.Spec)) *fixture {
 	clock := func() time.Time { return f.now }
 	repo := streammem.NewRepository()
 	f.breaks = adbreak.NewService(repo, adbreakmem.NewRepository(), fakeCues{}, f.events, clock)
-	f.streams = stream.NewService(repo, repo, nopRuntimes{}, f.breaks, f.events, clock)
+	f.streams = stream.NewService(repo, repo, nopRuntimes{}, f.breaks, nopFaults{}, f.events, clock)
 	spec := streamtest.Spec()
 	spec.Ads.DASH = []string{"eventstream-bin", "inband"}
 	if edit != nil {

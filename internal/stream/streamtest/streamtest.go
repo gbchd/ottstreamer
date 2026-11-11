@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"ottstreamer/internal/fault"
 	"ottstreamer/internal/stream"
 )
 
@@ -87,19 +88,22 @@ func RunRepositoryContract(t *testing.T, newRepo func() Store) {
 		r := newRepo()
 		in := Stream("a")
 		end := int64(7)
+		in.Spec.Faults = []fault.Rule{{ID: "f", Match: fault.Match{Kind: fault.KindSegment, Renditions: []string{"720p"}}}}
 		in.Status.Epoch = &stream.Epoch{Number: 1, AST: time.Unix(0, 0), EndSegment: &end, Spec: in.Spec.Clone()}
 		out, err := r.Save(ctx, in, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		in.Spec.Video[0].ID = "changed"
+		in.Spec.Faults[0].Match.Renditions[0] = "changed"
 		out.Spec.Formats[0] = "changed"
 		*out.Status.Epoch.EndSegment = 99
 		got, _ := r.Get(ctx, "a")
 		got.Spec.Audio[0].ID = "changed"
 		got, _ = r.Get(ctx, "a")
 		if got.Spec.Video[0].ID == "changed" || got.Spec.Formats[0] == "changed" ||
-			got.Spec.Audio[0].ID == "changed" || *got.Status.Epoch.EndSegment != 7 {
+			got.Spec.Audio[0].ID == "changed" || got.Spec.Faults[0].Match.Renditions[0] == "changed" ||
+			*got.Status.Epoch.EndSegment != 7 {
 			t.Fatalf("stored stream shares memory with a caller: %+v", got)
 		}
 	})
