@@ -1,0 +1,472 @@
+openapi: 3.0.3
+info:
+  title: ottstreamer origin API
+  version: 1.0.0
+  description: |
+    Control plane of the synthetic OTT origin: streams, their lifecycle and
+    their SCTE-35 ad breaks. Durations are JSON numbers of seconds, decimals
+    allowed. Every call needs `Authorization: Bearer <key>` except /api/time.
+security:
+  - bearer: []
+
+paths:
+  /api/streams:
+    get:
+      operationId: listStreams
+      summary: List streams with their status
+      responses:
+        "200":
+          description: Every stream, sorted by id
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Stream" }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createStream
+      summary: Create a stream in state stopped
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateStreamRequest" }
+      responses:
+        "201":
+          description: Created
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Stream" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /api/streams/{id}:
+    parameters:
+      - $ref: "#/components/parameters/StreamID"
+    get:
+      operationId: getStream
+      summary: One stream
+      responses:
+        "200":
+          description: The stream
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Stream" }
+        "404": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+    put:
+      operationId: replaceStream
+      summary: Replace name and spec; the spec applies on next start, the window at once
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReplaceStreamRequest" }
+      responses:
+        "200":
+          description: The updated stream
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Stream" }
+        "404": { $ref: "#/components/responses/Error" }
+        "412": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "428": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteStream
+      summary: Remove a stream that is not running, and its breaks
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "204":
+          description: Deleted
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "412": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /api/streams/{id}/start:
+    parameters:
+      - $ref: "#/components/parameters/StreamID"
+    post:
+      operationId: startStream
+      summary: Start a new epoch from a snapshot of the spec
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StartRequest" }
+      responses:
+        "200":
+          description: The running stream
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Stream" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /api/streams/{id}/stop:
+    parameters:
+      - $ref: "#/components/parameters/StreamID"
+    post:
+      operationId: stopStream
+      summary: End the epoch at the frozen horizon
+      responses:
+        "200":
+          description: The ended stream
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Stream" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /api/streams/{id}/status:
+    parameters:
+      - $ref: "#/components/parameters/StreamID"
+    get:
+      operationId: getStreamStatus
+      summary: Live position of the current epoch
+      responses:
+        "200":
+          description: The position
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StreamPosition" }
+        "404": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /api/streams/{id}/breaks:
+    parameters:
+      - $ref: "#/components/parameters/StreamID"
+    get:
+      operationId: listBreaks
+      summary: Upcoming, active and recent breaks of the current epoch
+      responses:
+        "200":
+          description: Breaks sorted by start
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Break" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createBreak
+      summary: Schedule a break, snapped to segment boundaries
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BreakRequest" }
+      responses:
+        "201":
+          description: The scheduled break
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Break" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /api/streams/{id}/breaks/{breakId}:
+    parameters:
+      - $ref: "#/components/parameters/StreamID"
+      - name: breakId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getBreak
+      summary: One break, with its cues
+      responses:
+        "200":
+          description: The break
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Break" }
+        "404": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteBreak
+      summary: Cancel a break that has not started, or end an active one early
+      responses:
+        "200":
+          description: The updated break
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Break" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /api/time:
+    get:
+      operationId: getTime
+      summary: Server UTC time for DASH UTCTiming (urn:mpeg:dash:utc:http-iso:2014)
+      security: []
+      responses:
+        "200":
+          description: ISO 8601 UTC time with milliseconds
+          content:
+            text/plain:
+              schema: { type: string, example: "2026-11-06T18:30:00.123Z" }
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: A key from ORIGIN_API_KEYS; role read allows GET only.
+
+  parameters:
+    StreamID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[a-z0-9-]{1,40}$" }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: The ETag of the stream, `"<version>"`. Required on PUT (428 without it).
+      schema: { type: string }
+
+  headers:
+    ETag:
+      description: The stream version, `"<version>"`
+      schema: { type: string }
+
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        fields:
+          type: array
+          items: { $ref: "#/components/schemas/FieldError" }
+    FieldError:
+      type: object
+      required: [field, message]
+      properties:
+        field: { type: string, example: "spec.video[1].bitrateKbps" }
+        message: { type: string }
+
+    CreateStreamRequest:
+      type: object
+      required: [id, spec]
+      properties:
+        id: { type: string, pattern: "^[a-z0-9-]{1,40}$" }
+        name: { type: string }
+        spec: { $ref: "#/components/schemas/Spec" }
+    ReplaceStreamRequest:
+      type: object
+      required: [spec]
+      properties:
+        name: { type: string }
+        spec: { $ref: "#/components/schemas/Spec" }
+    StartRequest:
+      type: object
+      properties:
+        ast:
+          type: string
+          format: date-time
+          x-go-type-skip-optional-pointer: false
+          description: Availability start time, on an even second. Default now rounded up to an even second.
+
+    Stream:
+      type: object
+      required: [id, name, spec, status, version, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        spec: { $ref: "#/components/schemas/Spec" }
+        status: { $ref: "#/components/schemas/Status" }
+        version: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    Spec:
+      type: object
+      required: [formats, video, audio]
+      properties:
+        formats:
+          type: array
+          items: { type: string, enum: [hls, dash] }
+        segmentSeconds: { type: number, format: double, description: "0.5-10, a whole number of frames; default 2" }
+        gopSeconds: { type: number, format: double, description: "Divides segmentSeconds; default segmentSeconds" }
+        fps: { type: integer, enum: [24, 25, 30, 50, 60], description: "Default 25" }
+        timezone: { type: string, description: "IANA zone of the burnt-in clock; default UTC" }
+        overlay: { $ref: "#/components/schemas/Overlay" }
+        video:
+          type: array
+          items: { $ref: "#/components/schemas/Video" }
+        audio:
+          type: array
+          items: { $ref: "#/components/schemas/Audio" }
+        dash: { $ref: "#/components/schemas/DASH" }
+        ads: { $ref: "#/components/schemas/Ads" }
+        window: { $ref: "#/components/schemas/Window" }
+    Overlay:
+      type: object
+      properties:
+        renditionLabel:
+          type: boolean
+          description: Burn "720p · 3000 kbit/s" into each rendition; default true
+          x-go-type-skip-optional-pointer: false
+    Video:
+      type: object
+      required: [id, width, height, bitrateKbps]
+      properties:
+        id: { type: string }
+        codec: { type: string, description: "h264 (default); hevc and av1 are not supported yet" }
+        profile: { type: string, description: "baseline, main or high (default)" }
+        width: { type: integer }
+        height: { type: integer }
+        bitrateKbps: { type: integer }
+    Audio:
+      type: object
+      required: [id, lang, channels, bitrateKbps]
+      properties:
+        id: { type: string }
+        lang: { type: string, description: BCP 47 tag }
+        name: { type: string }
+        channels: { type: integer, enum: [1, 2, 6] }
+        bitrateKbps: { type: integer }
+        codec: { type: string, description: "aac (default) or ac3; eac3 and opus are not supported yet" }
+        group: { type: string, description: "Bitrate tier; default main" }
+        default: { type: boolean }
+        ticHz: { type: integer, description: "Beep on odd seconds; default steps up per language" }
+        tocHz: { type: integer, description: "Beep on even seconds; default steps up per language" }
+    DASH:
+      type: object
+      properties:
+        addressing:
+          type: string
+          enum: [number, timeline-time, timeline-number]
+          description: Default timeline-time
+    Ads:
+      type: object
+      properties:
+        leadSeconds: { type: number, format: double, description: "2 segments to 60 s; default 8" }
+        command: { type: string, enum: [splice_insert, time_signal] }
+        segmentationType:
+          type: string
+          enum: [provider_placement_opportunity, provider_ad, break, distributor_placement_opportunity]
+          description: Required with time_signal, refused otherwise
+        hls:
+          type: array
+          items: { type: string, enum: [daterange, cueout, oatcls, adobe] }
+          description: Default [daterange]
+        dash:
+          type: array
+          items: { type: string, enum: [eventstream-bin, eventstream-xml, inband] }
+          description: Default [eventstream-bin]
+        dashMultiPeriod: { type: boolean }
+        recurring:
+          allOf: [{ $ref: "#/components/schemas/Recurring" }]
+          x-go-type-skip-optional-pointer: false
+    Recurring:
+      type: object
+      required: [everySeconds, durationSeconds, offsetSeconds]
+      properties:
+        everySeconds: { type: number, format: double }
+        durationSeconds: { type: number, format: double }
+        offsetSeconds: { type: number, format: double }
+    Window:
+      type: object
+      properties:
+        dvrSeconds: { type: number, format: double, description: "3 segments to 24 h; default 30" }
+        retainSeconds: { type: number, format: double, description: "dvrSeconds to 24 h; default 300" }
+
+    Status:
+      type: object
+      required: [state, pendingChanges, audioAligned]
+      properties:
+        state: { $ref: "#/components/schemas/State" }
+        epoch:
+          allOf: [{ $ref: "#/components/schemas/Epoch" }]
+          x-go-type-skip-optional-pointer: false
+        pendingChanges: { type: boolean, description: The spec differs from the running snapshot }
+        audioAligned: { type: boolean, description: Every audio segment has the same length }
+    State:
+      type: string
+      enum: [stopped, running, ended]
+    Epoch:
+      type: object
+      required: [number, ast, endSegment, spec]
+      properties:
+        number: { type: integer }
+        ast: { type: string, format: date-time }
+        endSegment: { type: integer, format: int64, nullable: true, x-go-type-skip-optional-pointer: false }
+        spec: { $ref: "#/components/schemas/Spec" }
+
+    StreamPosition:
+      type: object
+      required: [state, now]
+      properties:
+        state: { $ref: "#/components/schemas/State" }
+        now: { type: string, format: date-time }
+        epoch: { type: integer, description: Current epoch number, x-go-type-skip-optional-pointer: false }
+        liveEdge: { type: integer, format: int64, description: "Last published segment, -1 before the first", x-go-type-skip-optional-pointer: false }
+        frozenHorizon: { type: integer, format: int64, description: Last segment that can no longer change, x-go-type-skip-optional-pointer: false }
+        endSegment: { type: integer, format: int64, description: Last segment of an ended epoch, x-go-type-skip-optional-pointer: false }
+        activeBreak:
+          allOf: [{ $ref: "#/components/schemas/Break" }]
+          x-go-type-skip-optional-pointer: false
+
+    BreakRequest:
+      type: object
+      required: [duration]
+      properties:
+        duration: { type: number, format: double, description: Seconds, rounded up to whole segments }
+        in: { type: string, description: 'Start after this Go duration from now, e.g. "10s"' }
+        at: { type: string, format: date-time, description: Start at or after this time, x-go-type-skip-optional-pointer: false }
+        replaceRecurring: { type: boolean, description: Cancel an overlapping recurring break instead of 409 }
+    Break:
+      type: object
+      required: [id, eventId, startSegment, endSegment, start, end, requestedSeconds, durationSeconds, recurring, cancelled, cueOut, cueIn]
+      properties:
+        id: { type: string, description: '"1", "2", ... manual; "r-<k>" recurring' }
+        eventId: { type: integer, format: int64 }
+        startSegment: { type: integer, format: int64 }
+        endSegment: { type: integer, format: int64, description: First segment after the break }
+        start: { type: string, format: date-time }
+        end: { type: string, format: date-time }
+        requestedSeconds: { type: number, format: double }
+        durationSeconds: { type: number, format: double }
+        recurring: { type: boolean }
+        cancelled: { type: boolean }
+        cueOut: { $ref: "#/components/schemas/Cue" }
+        cueIn: { $ref: "#/components/schemas/Cue" }
+    Cue:
+      type: object
+      required: [base64, hex]
+      properties:
+        base64: { type: string }
+        hex: { type: string }
