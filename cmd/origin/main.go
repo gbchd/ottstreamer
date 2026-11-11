@@ -22,6 +22,10 @@ import (
 	"ottstreamer/internal/apikey"
 	"ottstreamer/internal/config"
 	"ottstreamer/internal/cors"
+	"ottstreamer/internal/live"
+	"ottstreamer/internal/live/liveffmpeg"
+	"ottstreamer/internal/live/livehttp"
+	"ottstreamer/internal/live/livemp4"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/stream/streammem"
 )
@@ -53,9 +57,25 @@ func run(logger *slog.Logger) error {
 		logger.WarnContext(ctx, "no api keys configured, /api answers 401 except /api/time")
 	}
 
+	tmp, err := os.MkdirTemp(cfg.TmpDir, "ottstreamer-")
+	if err != nil {
+		return fmt.Errorf("create tmp dir: %w", err)
+	}
+	defer func() {
+		if err := os.RemoveAll(tmp); err != nil {
+			logger.ErrorContext(ctx, "remove tmp dir", "dir", tmp, "error", err)
+		}
+	}()
+	enc, err := liveffmpeg.NewEncoder(cfg.FFmpeg, tmp, cfg.MaxFFmpeg, logger)
+	if err != nil {
+		return fmt.Errorf("ffmpeg encoder: %w", err)
+	}
+
 	repo := streammem.NewRepository()
 	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), time.Now)
-	streams := stream.NewService(repo, repo, noRuntimes{}, breaks, time.Now)
+	mgr := live.NewManager(enc, livemp4.NewWriter(), breaks, cfg.CacheBytes, cfg.ProducerParallelism, time.Now, logger)
+	defer mgr.Close() // after the server has drained, before the tmp dir goes
+	streams := stream.NewService(repo, repo, mgr, breaks, time.Now)
 	if err := streams.Resume(ctx); err != nil {
 		return fmt.Errorf("resume streams: %w", err)
 	}
@@ -66,6 +86,7 @@ func run(logger *slog.Logger) error {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", auth(apiMux))
 	mux.Handle("/api/time", apiMux) // open, more specific than /api/
+	livehttp.NewHandler(mgr, repo, breaks, time.Now, logger).Register(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ottstreamer origin\n")) })
 
@@ -125,11 +146,3 @@ func recovered(ctx context.Context, logger *slog.Logger, w http.ResponseWriter, 
 	logger.ErrorContext(ctx, "handler panic", "path", path, "panic", v, "stack", string(debug.Stack()))
 	http.Error(w, "internal error", http.StatusInternalServerError)
 }
-
-// ponytail: placeholder until the live service exists (Phase C wires
-// *live.Manager here).
-type noRuntimes struct{}
-
-func (noRuntimes) Launch(context.Context, stream.Stream) error { return nil }
-func (noRuntimes) End(string, int64)                           {}
-func (noRuntimes) Drop(string)                                 {}
