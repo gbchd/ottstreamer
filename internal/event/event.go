@@ -32,6 +32,9 @@ const (
 	SignalCueIn     Type = "signal.cue_in"
 	SignalCancel    Type = "signal.cancel"
 
+	FaultsUpdated Type = "faults.updated" // data: rules, the IDs of the new rule set
+	FaultInjected Type = "fault.injected" // data: rule, actions, count, minute; one per rule and minute
+
 	SegmentLate    Type = "segment.late"
 	SegmentRetried Type = "segment.retried"
 	FFmpegFailed   Type = "ffmpeg.failed" // data: error, ending with ffmpeg's stderr tail

@@ -9,7 +9,7 @@ import (
 const root = "ottstreamer/internal/"
 
 // Add a name here when you add a part of the domain.
-var domainPackages = []string{"timeline", "stream", "adbreak", "live", "event"}
+var domainPackages = []string{"timeline", "stream", "adbreak", "live", "event", "fault"}
 
 func TestDomainPackagesImportNoAdapters(t *testing.T) {
 	for _, name := range domainPackages {
