@@ -39,6 +39,7 @@ linters:
             - "**/internal/stream/*.go"
             - "**/internal/adbreak/*.go"
             - "**/internal/live/*.go"
+            - "**/internal/event/*.go"
           deny:
             - pkg: database/sql
               desc: storage belongs in an adapter subpackage such as stream/streammem
