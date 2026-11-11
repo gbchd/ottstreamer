@@ -342,6 +342,39 @@ type Error struct {
 	Fields []FieldError `json:"fields,omitempty"`
 }
 
+// Event defines model for Event.
+type Event struct {
+	// Actor "api:<key name>" or "system"
+	//
+	// Example: api:qa-team
+	Actor string    `json:"actor"`
+	At    time.Time `json:"at"`
+
+	// Data Example: {"breakId":"7","durationSeconds":30,"eventId":7,"source":"manual"}
+	Data map[string]interface{} `json:"data"`
+
+	// Epoch Null for a stream event before its first start
+	Epoch *int `json:"epoch"`
+
+	// Id ULID, sorts by time
+	Id string `json:"id"`
+
+	// Segment Media position, when there is one
+	Segment  *int64 `json:"segment"`
+	StreamId string `json:"streamId"`
+
+	// Type Example: break.started
+	Type string `json:"type"`
+}
+
+// EventPage defines model for EventPage.
+type EventPage struct {
+	Events []Event `json:"events"`
+
+	// Next Cursor of the next page; null on the last
+	Next *string `json:"next"`
+}
+
 // FieldError defines model for FieldError.
 type FieldError struct {
 	// Field Example: spec.video[1].bitrateKbps
@@ -447,6 +480,38 @@ type StreamPosition struct {
 	State    State     `json:"state"`
 }
 
+// Timeline defines model for Timeline.
+type Timeline struct {
+	Ast    *time.Time `json:"ast,omitempty"`
+	Breaks []Break    `json:"breaks"`
+
+	// DvrStart First segment of the DVR window
+	DvrStart *int64 `json:"dvrStart,omitempty"`
+
+	// EndSegment Last segment of an ended epoch
+	EndSegment *int64 `json:"endSegment,omitempty"`
+
+	// Epoch Current epoch, unless stopped
+	Epoch *int `json:"epoch,omitempty"`
+
+	// Events At most 1000; page the rest with /events from eventsNext
+	Events []Event `json:"events"`
+
+	// EventsNext Cursor of the events after the last one returned
+	EventsNext *string   `json:"eventsNext"`
+	From       time.Time `json:"from"`
+
+	// FrozenHorizon Last segment that can no longer change
+	FrozenHorizon *int64 `json:"frozenHorizon,omitempty"`
+
+	// LiveEdge Last published segment, -1 before the first
+	LiveEdge       *int64    `json:"liveEdge,omitempty"`
+	Now            time.Time `json:"now"`
+	SegmentSeconds *float64  `json:"segmentSeconds,omitempty"`
+	State          State     `json:"state"`
+	To             time.Time `json:"to"`
+}
+
 // Video defines model for Video.
 type Video struct {
 	BitrateKbps int `json:"bitrateKbps"`
@@ -486,6 +551,42 @@ type DeleteStreamParams struct {
 type ReplaceStreamParams struct {
 	// IfMatch The ETag of the stream, `"<version>"`. Required on PUT (428 without it).
 	IfMatch IfMatch `json:"If-Match,omitempty"`
+}
+
+// ListEventsParams defines parameters for ListEvents.
+type ListEventsParams struct {
+	// From Events at or after this time
+	From time.Time `form:"from,omitempty" json:"from,omitempty"`
+
+	// To Events before this time
+	To time.Time `form:"to,omitempty" json:"to,omitempty"`
+
+	// Types Comma-separated event types, e.g. break.started,break.ended
+	Types []string `form:"types,omitempty" json:"types,omitempty"`
+
+	// Cursor The next cursor of the previous page
+	Cursor string `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Default 100, at most 1000
+	Limit int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// StreamEventsParams defines parameters for StreamEvents.
+type StreamEventsParams struct {
+	// Since Replay the events after this ID
+	Since string `form:"since,omitempty" json:"since,omitempty"`
+
+	// LastEventID Sent by a reconnecting EventSource; wins over since
+	LastEventID string `json:"Last-Event-ID,omitempty"`
+}
+
+// GetTimelineParams defines parameters for GetTimeline.
+type GetTimelineParams struct {
+	// From Default now minus the DVR window
+	From time.Time `form:"from,omitempty" json:"from,omitempty"`
+
+	// To Default now plus the DVR window
+	To time.Time `form:"to,omitempty" json:"to,omitempty"`
 }
 
 // CreateStreamJSONRequestBody defines body for CreateStream for application/json ContentType.
@@ -529,6 +630,12 @@ type ServerInterface interface {
 	// GetBreak One break, with its cues
 	// (GET /api/streams/{id}/breaks/{breakId})
 	GetBreak(w http.ResponseWriter, r *http.Request, id StreamID, breakId string)
+	// ListEvents A page of the stream's event log, oldest first
+	// (GET /api/streams/{id}/events)
+	ListEvents(w http.ResponseWriter, r *http.Request, id StreamID, params ListEventsParams)
+	// StreamEvents Server-Sent Events of the stream's log
+	// (GET /api/streams/{id}/events/live)
+	StreamEvents(w http.ResponseWriter, r *http.Request, id StreamID, params StreamEventsParams)
 	// StartStream Start a new epoch from a snapshot of the spec
 	// (POST /api/streams/{id}/start)
 	StartStream(w http.ResponseWriter, r *http.Request, id StreamID)
@@ -538,6 +645,9 @@ type ServerInterface interface {
 	// StopStream End the epoch at the frozen horizon
 	// (POST /api/streams/{id}/stop)
 	StopStream(w http.ResponseWriter, r *http.Request, id StreamID)
+	// GetTimeline Everything the timeline view draws, in one call
+	// (GET /api/streams/{id}/timeline)
+	GetTimeline(w http.ResponseWriter, r *http.Request, id StreamID, params GetTimelineParams)
 	// GetTime Server UTC time for DASH UTCTiming (urn:mpeg:dash:utc:http-iso:2014)
 	// (GET /api/time)
 	GetTime(w http.ResponseWriter, r *http.Request)
@@ -828,6 +938,163 @@ func (siw *ServerInterfaceWrapper) GetBreak(w http.ResponseWriter, r *http.Reque
 	handler.ServeHTTP(w, r)
 }
 
+// ListEvents operation middleware
+func (siw *ServerInterfaceWrapper) ListEvents(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id StreamID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListEventsParams
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", r.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "from"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "from", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", r.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "to"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "to", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "types" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "types", r.URL.Query(), &params.Types, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "types"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "types", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListEvents(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// StreamEvents operation middleware
+func (siw *ServerInterfaceWrapper) StreamEvents(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id StreamID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params StreamEventsParams
+
+	// ------------- Optional query parameter "since" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "since", r.URL.Query(), &params.Since, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "since"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "since", Err: err})
+		}
+		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Last-Event-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Last-Event-ID")]; found {
+		var LastEventID string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Last-Event-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Last-Event-ID", valueList[0], &LastEventID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Last-Event-ID", Err: err})
+			return
+		}
+
+		params.LastEventID = LastEventID
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.StreamEvents(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // StartStream operation middleware
 func (siw *ServerInterfaceWrapper) StartStream(w http.ResponseWriter, r *http.Request) {
 
@@ -897,6 +1164,61 @@ func (siw *ServerInterfaceWrapper) StopStream(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.StopStream(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetTimeline operation middleware
+func (siw *ServerInterfaceWrapper) GetTimeline(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id StreamID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetTimelineParams
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", r.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "from"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "from", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", r.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "to"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "to", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetTimeline(w, r, id, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1052,6 +1374,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/streams/{id}/breaks", wrapper.CreateBreak)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/streams/{id}/breaks/{breakId}", wrapper.DeleteBreak)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/streams/{id}/breaks/{breakId}", wrapper.GetBreak)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/streams/{id}/events", wrapper.ListEvents)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/streams/{id}/events/live", wrapper.StreamEvents)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/streams/{id}/timeline", wrapper.GetTimeline)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/time", wrapper.GetTime)
 
 	return m
@@ -1687,6 +2012,115 @@ func (response GetBreakdefaultJSONResponse) VisitGetBreakResponse(w http.Respons
 	return err
 }
 
+type ListEventsRequestObject struct {
+	Id     StreamID `json:"id"`
+	Params ListEventsParams
+}
+
+type ListEventsResponseObject interface {
+	VisitListEventsResponse(w http.ResponseWriter) error
+}
+
+type ListEvents200JSONResponse EventPage
+
+func (response ListEvents200JSONResponse) VisitListEventsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListEventsdefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response ListEventsdefaultJSONResponse) VisitListEventsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StreamEventsRequestObject struct {
+	Id     StreamID `json:"id"`
+	Params StreamEventsParams
+}
+
+type StreamEventsResponseObject interface {
+	VisitStreamEventsResponse(w http.ResponseWriter) error
+}
+
+type StreamEvents200TexteventStreamResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response StreamEvents200TexteventStreamResponse) VisitStreamEventsResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		// If w doesn't support flushing, fall back to io.Copy.
+		_, err := io.Copy(w, response.Body)
+		return err
+	}
+	// text/event-stream messages are typically small; use a
+	// modest buffer and flush after each chunk so clients see
+	// events immediately instead of waiting on OS buffering.
+	buf := make([]byte, 4096)
+	for {
+		n, err := response.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+			flusher.Flush()
+		}
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+type StreamEventsdefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response StreamEventsdefaultJSONResponse) VisitStreamEventsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type StartStreamRequestObject struct {
 	Id   StreamID `json:"id"`
 	Body *StartStreamJSONRequestBody
@@ -1889,6 +2323,60 @@ func (response StopStreamdefaultJSONResponse) VisitStopStreamResponse(w http.Res
 	return err
 }
 
+type GetTimelineRequestObject struct {
+	Id     StreamID `json:"id"`
+	Params GetTimelineParams
+}
+
+type GetTimelineResponseObject interface {
+	VisitGetTimelineResponse(w http.ResponseWriter) error
+}
+
+type GetTimeline200JSONResponse Timeline
+
+func (response GetTimeline200JSONResponse) VisitGetTimelineResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetTimeline404JSONResponse struct{ ErrorJSONResponse }
+
+func (response GetTimeline404JSONResponse) VisitGetTimelineResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetTimelinedefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response GetTimelinedefaultJSONResponse) VisitGetTimelineResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetTimeRequestObject struct {
 }
 
@@ -1936,6 +2424,12 @@ type StrictServerInterface interface {
 	// GetBreak One break, with its cues
 	// (GET /api/streams/{id}/breaks/{breakId})
 	GetBreak(ctx context.Context, request GetBreakRequestObject) (GetBreakResponseObject, error)
+	// ListEvents A page of the stream's event log, oldest first
+	// (GET /api/streams/{id}/events)
+	ListEvents(ctx context.Context, request ListEventsRequestObject) (ListEventsResponseObject, error)
+	// StreamEvents Server-Sent Events of the stream's log
+	// (GET /api/streams/{id}/events/live)
+	StreamEvents(ctx context.Context, request StreamEventsRequestObject) (StreamEventsResponseObject, error)
 	// StartStream Start a new epoch from a snapshot of the spec
 	// (POST /api/streams/{id}/start)
 	StartStream(ctx context.Context, request StartStreamRequestObject) (StartStreamResponseObject, error)
@@ -1945,6 +2439,9 @@ type StrictServerInterface interface {
 	// StopStream End the epoch at the frozen horizon
 	// (POST /api/streams/{id}/stop)
 	StopStream(ctx context.Context, request StopStreamRequestObject) (StopStreamResponseObject, error)
+	// GetTimeline Everything the timeline view draws, in one call
+	// (GET /api/streams/{id}/timeline)
+	GetTimeline(ctx context.Context, request GetTimelineRequestObject) (GetTimelineResponseObject, error)
 	// GetTime Server UTC time for DASH UTCTiming (urn:mpeg:dash:utc:http-iso:2014)
 	// (GET /api/time)
 	GetTime(ctx context.Context, request GetTimeRequestObject) (GetTimeResponseObject, error)
@@ -2244,6 +2741,60 @@ func (sh *strictHandler) GetBreak(w http.ResponseWriter, r *http.Request, id Str
 	}
 }
 
+// ListEvents operation middleware
+func (sh *strictHandler) ListEvents(w http.ResponseWriter, r *http.Request, id StreamID, params ListEventsParams) {
+	var request ListEventsRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListEvents(ctx, request.(ListEventsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListEvents")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListEventsResponseObject); ok {
+		if err := validResponse.VisitListEventsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// StreamEvents operation middleware
+func (sh *strictHandler) StreamEvents(w http.ResponseWriter, r *http.Request, id StreamID, params StreamEventsParams) {
+	var request StreamEventsRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.StreamEvents(ctx, request.(StreamEventsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "StreamEvents")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(StreamEventsResponseObject); ok {
+		if err := validResponse.VisitStreamEventsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // StartStream operation middleware
 func (sh *strictHandler) StartStream(w http.ResponseWriter, r *http.Request, id StreamID) {
 	var request StartStreamRequestObject
@@ -2325,6 +2876,33 @@ func (sh *strictHandler) StopStream(w http.ResponseWriter, r *http.Request, id S
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(StopStreamResponseObject); ok {
 		if err := validResponse.VisitStopStreamResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetTimeline operation middleware
+func (sh *strictHandler) GetTimeline(w http.ResponseWriter, r *http.Request, id StreamID, params GetTimelineParams) {
+	var request GetTimelineRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetTimeline(ctx, request.(GetTimelineRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetTimeline")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetTimelineResponseObject); ok {
+		if err := validResponse.VisitGetTimelineResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

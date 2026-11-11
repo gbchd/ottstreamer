@@ -87,7 +87,7 @@ func newE2E(t *testing.T, t0 time.Time) *e2e {
 	}
 
 	srv := httptest.NewServer(handler(deps{
-		auth: auth, streams: streams, breaks: breaks, mgr: mgr, repo: repo,
+		auth: auth, streams: streams, breaks: breaks, events: events, mgr: mgr, repo: repo,
 		ready: readiness(t.Context(), repo, enc, mgr, tmp, ""), metrics: met, now: c.now, logger: logger,
 	}))
 	t.Cleanup(srv.Close)

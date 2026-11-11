@@ -106,7 +106,7 @@ func run(logger *slog.Logger) error {
 	srv := &http.Server{
 		Addr: cfg.Listen,
 		Handler: handler(deps{
-			auth: auth, apiOrigins: cfg.CORSAPIOrigins, streams: streams, breaks: breaks, mgr: mgr, repo: repo,
+			auth: auth, apiOrigins: cfg.CORSAPIOrigins, streams: streams, breaks: breaks, events: events, mgr: mgr, repo: repo,
 			ready: ready, metrics: met, now: time.Now, logger: logger,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -133,6 +133,7 @@ type deps struct {
 	apiOrigins []string
 	streams    *stream.Service
 	breaks     *adbreak.Service
+	events     *event.Service
 	mgr        *live.Manager
 	repo       *streammem.Repository
 	ready      http.Handler
@@ -145,7 +146,7 @@ type deps struct {
 // metrics > CORS > auth (/api except /api/time) > route.
 func handler(d deps) http.Handler {
 	apiMux := http.NewServeMux()
-	api.Register(apiMux, d.streams, d.breaks, d.now, d.logger)
+	api.Register(apiMux, d.streams, d.breaks, d.events, d.now, d.logger)
 	mux := http.NewServeMux()
 	mux.Handle("/api/", d.auth(accesslog.Routed(apiMux)))
 	mux.Handle("/api/time", apiMux) // open, more specific than /api/

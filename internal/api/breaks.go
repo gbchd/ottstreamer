@@ -15,6 +15,9 @@ import (
 type BreakReader interface {
 	Get(ctx context.Context, streamID, breakID string) (adbreak.Break, error)
 	List(ctx context.Context, streamID string) ([]adbreak.Break, error)
+	// InRange returns the breaks overlapping segments [from, to), recurring
+	// and cancelled ones included.
+	InRange(ctx context.Context, streamID string, epoch int, from, to int64) ([]adbreak.Break, error)
 }
 
 // BreakWriter schedules, cancels and ends breaks.

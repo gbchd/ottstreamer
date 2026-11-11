@@ -3,8 +3,8 @@ info:
   title: ottstreamer origin API
   version: 1.0.0
   description: |
-    Control plane of the synthetic OTT origin: streams, their lifecycle and
-    their SCTE-35 ad breaks. Durations are JSON numbers of seconds, decimals
+    Control plane of the synthetic OTT origin: streams, their lifecycle,
+    their SCTE-35 ad breaks and their event log. Durations are JSON numbers of seconds, decimals
     allowed. Every call needs `Authorization: Bearer <key>` except /api/time.
 security:
   - bearer: []
@@ -215,6 +215,73 @@ paths:
               schema: { $ref: "#/components/schemas/Break" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /api/streams/{id}/events:
+    parameters:
+      - $ref: "#/components/parameters/StreamID"
+    get:
+      operationId: listEvents
+      summary: A page of the stream's event log, oldest first
+      description: The log outlives the stream; an id that never had events gives an empty page.
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time }, description: Events at or after this time }
+        - { name: to, in: query, schema: { type: string, format: date-time }, description: Events before this time }
+        - name: types
+          in: query
+          style: form
+          explode: false
+          schema: { type: array, items: { type: string } }
+          description: Comma-separated event types, e.g. break.started,break.ended
+        - { name: cursor, in: query, schema: { type: string }, description: The next cursor of the previous page }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000 }, description: "Default 100, at most 1000" }
+      responses:
+        "200":
+          description: The page
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EventPage" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /api/streams/{id}/events/live:
+    parameters:
+      - $ref: "#/components/parameters/StreamID"
+    get:
+      operationId: streamEvents
+      summary: Server-Sent Events of the stream's log
+      description: |
+        Replays the events after Last-Event-ID (or since), then pushes each new
+        one as `id: <event id>` and `data: <Event JSON>`, with no event name, so
+        EventSource.onmessage gets them all. A comment line every 15 s keeps
+        the connection open. The server closes a client that falls behind; it
+        reconnects and resumes from its last ID.
+      parameters:
+        - { name: since, in: query, schema: { type: string }, description: Replay the events after this ID }
+        - { name: Last-Event-ID, in: header, schema: { type: string }, description: Sent by a reconnecting EventSource; wins over since }
+      responses:
+        "200":
+          description: The event stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+        default: { $ref: "#/components/responses/Error" }
+
+  /api/streams/{id}/timeline:
+    parameters:
+      - $ref: "#/components/parameters/StreamID"
+    get:
+      operationId: getTimeline
+      summary: Everything the timeline view draws, in one call
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time }, description: "Default now minus the DVR window" }
+        - { name: to, in: query, schema: { type: string, format: date-time }, description: "Default now plus the DVR window" }
+      responses:
+        "200":
+          description: Markers of the current epoch, breaks overlapping the range (future and recurring ones included) and the events in it
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Timeline" }
+        "404": { $ref: "#/components/responses/Error" }
         default: { $ref: "#/components/responses/Error" }
 
   /api/time:
@@ -470,3 +537,50 @@ components:
       properties:
         base64: { type: string }
         hex: { type: string }
+
+    Event:
+      type: object
+      required: [id, streamId, epoch, at, segment, type, actor, data]
+      properties:
+        id: { type: string, description: "ULID, sorts by time" }
+        streamId: { type: string }
+        epoch: { type: integer, nullable: true, description: "Null for a stream event before its first start", x-go-type-skip-optional-pointer: false }
+        at: { type: string, format: date-time }
+        segment: { type: integer, format: int64, nullable: true, description: "Media position, when there is one", x-go-type-skip-optional-pointer: false }
+        type: { type: string, example: break.started }
+        actor: { type: string, description: '"api:<key name>" or "system"', example: "api:qa-team" }
+        data:
+          type: object
+          additionalProperties: true
+          example: { breakId: "7", eventId: 7, durationSeconds: 30, source: manual }
+    EventPage:
+      type: object
+      required: [events, next]
+      properties:
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/Event" }
+        next: { type: string, nullable: true, description: Cursor of the next page; null on the last, x-go-type-skip-optional-pointer: false }
+    Timeline:
+      type: object
+      required: [now, from, to, state, breaks, events, eventsNext]
+      properties:
+        now: { type: string, format: date-time }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        state: { $ref: "#/components/schemas/State" }
+        epoch: { type: integer, description: "Current epoch, unless stopped", x-go-type-skip-optional-pointer: false }
+        ast: { type: string, format: date-time, x-go-type-skip-optional-pointer: false }
+        segmentSeconds: { type: number, format: double, x-go-type-skip-optional-pointer: false }
+        liveEdge: { type: integer, format: int64, description: "Last published segment, -1 before the first", x-go-type-skip-optional-pointer: false }
+        frozenHorizon: { type: integer, format: int64, description: Last segment that can no longer change, x-go-type-skip-optional-pointer: false }
+        dvrStart: { type: integer, format: int64, description: First segment of the DVR window, x-go-type-skip-optional-pointer: false }
+        endSegment: { type: integer, format: int64, description: Last segment of an ended epoch, x-go-type-skip-optional-pointer: false }
+        breaks:
+          type: array
+          items: { $ref: "#/components/schemas/Break" }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/Event" }
+          description: At most 1000; page the rest with /events from eventsNext
+        eventsNext: { type: string, nullable: true, description: Cursor of the events after the last one returned, x-go-type-skip-optional-pointer: false }

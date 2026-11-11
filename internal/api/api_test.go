@@ -15,9 +15,11 @@ import (
 	"ottstreamer/internal/adbreak/adbreakmem"
 	"ottstreamer/internal/adbreak/adbreakscte35"
 	"ottstreamer/internal/api"
-	"ottstreamer/internal/event/eventtest"
+	"ottstreamer/internal/event"
+	"ottstreamer/internal/event/eventmem"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/stream/streammem"
+	"ottstreamer/internal/ulid"
 )
 
 var t0 = time.Date(2026, 11, 6, 18, 40, 0, 0, time.UTC)
@@ -40,16 +42,26 @@ const demo = `{"id": "demo", "name": "Demo channel", "spec": ` + demoSpec + `}`
 
 func newServer(t *testing.T) (*httptest.Server, *time.Time) {
 	t.Helper()
+	return serve(t, func(h http.Handler) http.Handler { return h })
+}
+
+// serve runs the API behind wrap, on a test clock, with an in-memory event
+// log.
+func serve(t *testing.T, wrap func(http.Handler) http.Handler) (*httptest.Server, *time.Time) {
+	t.Helper()
 	now := t0
 	repo := streammem.NewRepository()
 	clock := func() time.Time { return now }
-	events := &eventtest.Recorder{}
+	var ids ulid.Generator
+	logger := slog.New(slog.DiscardHandler)
+	events := event.NewService(eventmem.NewRepository(100), clock, ids.New, func(event.Event) {}, logger)
 	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), events, clock)
 	svc := stream.NewService(repo, repo, nopRuntimes{}, breaks, events, clock)
 	mux := http.NewServeMux()
-	api.Register(mux, svc, breaks, clock, slog.New(slog.DiscardHandler))
-	srv := httptest.NewServer(mux)
+	api.Register(mux, svc, breaks, events, clock, logger)
+	srv := httptest.NewServer(wrap(mux))
 	t.Cleanup(srv.Close)
+	t.Cleanup(events.Close) // ends event streams, so that srv.Close does not wait for them
 	return srv, &now
 }
 
