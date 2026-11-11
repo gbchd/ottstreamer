@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -75,7 +77,8 @@ func newE2E(t *testing.T, t0 time.Time) *e2e {
 	}
 	repo := streammem.NewRepository()
 	var ids ulid.Generator
-	events := event.NewService(eventmem.NewRepository(eventsPerStream), c.now, ids.New, func(event.Event) {}, logger)
+	events := event.NewService(eventmem.NewRepository(eventsPerStream), c.now, ids.New, countEvents(met), logger)
+	t.Cleanup(events.Close)
 	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), events, c.now)
 	mgr := live.NewManager(enc, livemp4.NewWriter(), breaks, events, 64<<20, 2, met, c.now, logger)
 	t.Cleanup(mgr.Close)
@@ -295,5 +298,69 @@ func TestEndToEnd(t *testing.T) {
 		if !strings.Contains(prom, want) {
 			t.Errorf("metrics lack %s", want)
 		}
+	}
+	e.checkEvents()
+}
+
+// checkEvents checks the stream's log once the producer has crossed the
+// break, the metrics that come from it, and what deleting the stream does.
+func (e *e2e) checkEvents() {
+	t := e.t
+	want := []string{
+		"stream.created api:e2e -", "stream.started api:e2e -", "break.scheduled api:e2e 10",
+		"signal.announced system 8", "break.started system 10", "signal.cue_out system 10",
+		"break.ended system 13", "signal.cue_in system 13", "stream.stopped api:e2e 17",
+	}
+	var got []string
+	// The producer records crossings on real timers, behind the test clock.
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		var page struct {
+			Events []struct {
+				Type, Actor string
+				Segment     *int64
+			}
+		}
+		if err := json.Unmarshal(e.do(http.MethodGet, "/api/streams/e2e/events", "", http.StatusOK), &page); err != nil {
+			t.Fatal(err)
+		}
+		got = got[:0]
+		for _, ev := range page.Events {
+			if ev.Type == "segment.late" { // the test clock runs ahead of the producer
+				continue
+			}
+			seg := "-"
+			if ev.Segment != nil {
+				seg = strconv.FormatInt(*ev.Segment, 10)
+			}
+			got = append(got, ev.Type+" "+ev.Actor+" "+seg)
+		}
+		slices.Sort(got)
+		if slices.Equal(got, slices.Sorted(slices.Values(want))) {
+			break
+		}
+	}
+	if !slices.Equal(got, slices.Sorted(slices.Values(want))) {
+		t.Fatalf("events:\n got %q\nwant %q", got, want)
+	}
+
+	prom := string(e.do(http.MethodGet, "/metrics", "", http.StatusOK))
+	for _, want := range []string{
+		`ad_breaks_total{source="manual",stream="e2e",type="started"} 1`,
+		`ad_breaks_total{source="manual",stream="e2e",type="ended"} 1`,
+		`scte35_signals_total{source="manual",stream="e2e",type="announced"} 1`,
+		`scte35_signals_total{source="manual",stream="e2e",type="cue_in"} 1`,
+	} {
+		if !strings.Contains(prom, want) {
+			t.Errorf("metrics lack %s", want)
+		}
+	}
+
+	// Deleting the stream drops its series; its log stays readable.
+	e.do(http.MethodDelete, "/api/streams/e2e", "", http.StatusNoContent)
+	if prom := string(e.do(http.MethodGet, "/metrics", "", http.StatusOK)); strings.Contains(prom, `stream="e2e"`) {
+		t.Error("metrics keep series of the deleted stream")
+	}
+	if log := e.do(http.MethodGet, "/api/streams/e2e/events?types=stream.deleted", "", http.StatusOK); !bytes.Contains(log, []byte(`"actor":"api:e2e"`)) {
+		t.Errorf("no stream.deleted after delete: %s", log)
 	}
 }

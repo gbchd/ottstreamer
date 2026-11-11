@@ -25,6 +25,11 @@ func TestMetrics(t *testing.T) {
 	m.FFmpegStarted("demo")
 	m.FFmpegExited("demo", "")
 	m.FFmpegExited("demo", "timeout")
+	m.AdBreak("demo", "manual", "started")
+	m.SCTE35Signal("demo", "recurring", "cue_out")
+	m.SegmentLate("gone")
+	m.AdBreak("gone", "manual", "started")
+	m.DropStream("gone")
 
 	rec := httptest.NewRecorder()
 	m.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), "GET", "/metrics", nil))
@@ -39,10 +44,15 @@ func TestMetrics(t *testing.T) {
 		`ffmpeg_failures_total{reason="timeout",stream="demo"} 1`,
 		`cache_bytes 1024`, `cache_hits_total 7`, `cache_misses_total 3`,
 		`streams{state="running"} 2`, `streams{state="stopped"} 0`,
+		`ad_breaks_total{source="manual",stream="demo",type="started"} 1`,
+		`scte35_signals_total{source="recurring",stream="demo",type="cue_out"} 1`,
 		`go_goroutines `,
 	} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("metrics lack %s", want)
 		}
+	}
+	if strings.Contains(string(body), `stream="gone"`) {
+		t.Error("series of a dropped stream remain")
 	}
 }

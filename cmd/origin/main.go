@@ -89,7 +89,7 @@ func run(logger *slog.Logger) error {
 
 	repo := streammem.NewRepository()
 	var ids ulid.Generator
-	events := event.NewService(eventmem.NewRepository(eventsPerStream), time.Now, ids.New, func(event.Event) {}, logger)
+	events := event.NewService(eventmem.NewRepository(eventsPerStream), time.Now, ids.New, countEvents(met), logger)
 	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), events, time.Now)
 	mgr := live.NewManager(enc, livemp4.NewWriter(), breaks, events, cfg.CacheBytes, cfg.ProducerParallelism, met, time.Now, logger)
 	defer mgr.Close() // after the server has drained, before the tmp dir goes
@@ -111,6 +111,7 @@ func run(logger *slog.Logger) error {
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	srv.RegisterOnShutdown(events.Close) // event streams end, so the drain does not wait for them
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 	logger.InfoContext(ctx, "listening", "addr", cfg.Listen)
@@ -183,6 +184,22 @@ func readiness(ctx context.Context, repo stream.Repository, enc *liveffmpeg.Enco
 			return nil
 		}},
 	)
+}
+
+// countEvents feeds the metrics that come from the event log.
+func countEvents(met *metrics.Metrics) func(event.Event) {
+	return func(e event.Event) {
+		group, what, _ := strings.Cut(string(e.Type), ".")
+		source, _ := e.Data["source"].(string)
+		switch {
+		case e.Type == event.StreamDeleted:
+			met.DropStream(e.StreamID)
+		case e.Type == event.BreakStarted, e.Type == event.BreakEnded:
+			met.AdBreak(e.StreamID, source, what)
+		case group == "signal":
+			met.SCTE35Signal(e.StreamID, source, what)
+		}
+	}
 }
 
 // countByState counts the streams in each state, zeros included.

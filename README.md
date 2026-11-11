@@ -46,6 +46,14 @@ cat init.mp4 seg.m4s > 720p-1.mp4 && ffprobe -v error -count_frames -show_entrie
 
 Play `http://localhost:18080/live/demo/master.m3u8` or `.../manifest.mpd` in any HLS or DASH player; `/live` is open to every origin. Stop with `POST /api/streams/demo/stop`, or SIGTERM the process.
 
+Every change and every break or signal the live edge crosses goes to the stream's event log (the last 10 000 events per stream, kept after a delete):
+
+```sh
+curl -s 'localhost:18080/api/streams/demo/events?types=break.started,break.ended' -H 'Authorization: Bearer secret'
+curl -sN localhost:18080/api/streams/demo/events/live -H 'Authorization: Bearer secret'   # Server-Sent Events
+curl -s localhost:18080/api/streams/demo/timeline -H 'Authorization: Bearer secret'       # markers, breaks and events around now
+```
+
 Operations: `/healthz` answers while the process serves; `/readyz` answers 503 with the failing checks (repository, ffmpeg and its pinned version `ORIGIN_FFMPEG_VERSION`, tmp dir, producers more than 2 segments late, shutdown); `/metrics` is Prometheus. Logs are JSON on stdout, one `http request` line per request with its `request_id` (`X-Request-Id`, kept or generated).
 
 ## Development

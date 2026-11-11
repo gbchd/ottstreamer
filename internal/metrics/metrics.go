@@ -15,9 +15,6 @@ import (
 )
 
 // Metrics records what the origin does. It is safe for concurrent use.
-//
-// ponytail: per-stream series stay after the stream is deleted; delete
-// them on stream.deleted once the event log exists.
 type Metrics struct {
 	reg            *prometheus.Registry
 	httpRequests   *prometheus.CounterVec
@@ -27,6 +24,8 @@ type Metrics struct {
 	segmentsLate   *prometheus.CounterVec
 	ffmpegRunning  *prometheus.GaugeVec
 	ffmpegFailures *prometheus.CounterVec
+	adBreaks       *prometheus.CounterVec
+	scte35Signals  *prometheus.CounterVec
 }
 
 // New returns Metrics on their own registry, with the Go and process
@@ -58,6 +57,12 @@ func New() *Metrics {
 		ffmpegFailures: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "ffmpeg_failures_total", Help: "ffmpeg runs that failed, by reason (exit, timeout).",
 		}, []string{"stream", "reason"}),
+		adBreaks: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "ad_breaks_total", Help: "Breaks the live edge crossed, by type (started, ended).",
+		}, []string{"stream", "source", "type"}),
+		scte35Signals: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "scte35_signals_total", Help: "SCTE-35 signals the live edge crossed, by type (announced, cue_out, cue_in, cancel).",
+		}, []string{"stream", "source", "type"}),
 	}
 }
 
@@ -95,6 +100,27 @@ func (m *Metrics) FFmpegExited(streamID, reason string) {
 	m.ffmpegRunning.WithLabelValues(streamID).Dec()
 	if reason != "" {
 		m.ffmpegFailures.WithLabelValues(streamID, reason).Inc()
+	}
+}
+
+// AdBreak records a break crossing the live edge; source is manual or
+// recurring.
+func (m *Metrics) AdBreak(streamID, source, typ string) {
+	m.adBreaks.WithLabelValues(streamID, source, typ).Inc()
+}
+
+// SCTE35Signal records a signal crossing the live edge.
+func (m *Metrics) SCTE35Signal(streamID, source, typ string) {
+	m.scte35Signals.WithLabelValues(streamID, source, typ).Inc()
+}
+
+// DropStream deletes every series of a deleted stream.
+func (m *Metrics) DropStream(streamID string) {
+	only := prometheus.Labels{"stream": streamID}
+	for _, v := range []interface{ DeletePartialMatch(prometheus.Labels) int }{
+		m.segmentsBuilt, m.segmentBuild, m.segmentsLate, m.ffmpegRunning, m.ffmpegFailures, m.adBreaks, m.scte35Signals,
+	} {
+		v.DeletePartialMatch(only)
 	}
 }
 
