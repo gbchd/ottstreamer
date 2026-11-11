@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"time"
+
+	"ottstreamer/internal/event"
 )
 
 // Repository stores streams.
@@ -44,18 +47,33 @@ type Breaks interface {
 	DeleteAll(ctx context.Context, streamID string) error
 }
 
+// Events records what happens to streams.
+type Events interface {
+	Record(ctx context.Context, e event.Event)
+}
+
 // Service runs the stream use cases.
 type Service struct {
 	repo   Repository
 	del    Deleter
 	rt     Runtimes
 	breaks Breaks
+	events Events
 	now    func() time.Time
 }
 
 // NewService returns a Service.
-func NewService(repo Repository, del Deleter, rt Runtimes, br Breaks, now func() time.Time) *Service {
-	return &Service{repo: repo, del: del, rt: rt, breaks: br, now: now}
+func NewService(repo Repository, del Deleter, rt Runtimes, br Breaks, events Events, now func() time.Time) *Service {
+	return &Service{repo: repo, del: del, rt: rt, breaks: br, events: events, now: now}
+}
+
+// record records an event of s, in its current epoch if it has one.
+func (svc *Service) record(ctx context.Context, s Stream, t event.Type, seg *int64, data map[string]any) {
+	e := event.Event{StreamID: s.ID, Type: t, Segment: seg, Data: data}
+	if s.Status.Epoch != nil {
+		e.Epoch = s.Status.Epoch.Number
+	}
+	svc.events.Record(ctx, e)
 }
 
 // Create validates and stores a new stream in state stopped. Only ID, Name
@@ -70,7 +88,7 @@ func (svc *Service) Create(ctx context.Context, s Stream) (Stream, error) {
 		return Stream{}, err
 	}
 	now := svc.now()
-	return svc.repo.Save(ctx, Stream{
+	s, err := svc.repo.Save(ctx, Stream{
 		ID:        s.ID,
 		Name:      s.Name,
 		Spec:      spec,
@@ -78,6 +96,11 @@ func (svc *Service) Create(ctx context.Context, s Stream) (Stream, error) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, 0)
+	if err != nil {
+		return Stream{}, err
+	}
+	svc.record(ctx, s, event.StreamCreated, nil, map[string]any{"name": s.Name})
+	return s, nil
 }
 
 // Get returns one stream.
@@ -109,12 +132,49 @@ func (svc *Service) Replace(ctx context.Context, id, name string, spec Spec, ifM
 	if s.Version != ifMatch {
 		return Stream{}, ErrVersionMismatch
 	}
+	fields := changed(s, name, spec)
 	s.Name, s.Spec, s.UpdatedAt = name, spec, svc.now()
 	if e := s.Status.Epoch; e != nil {
 		e.Spec.Window = spec.Window
 		s.Status.PendingChanges = s.Status.State != StateStopped && !sameMedia(spec, e.Spec)
 	}
-	return svc.repo.Save(ctx, s, ifMatch)
+	s, err = svc.repo.Save(ctx, s, ifMatch)
+	if err != nil {
+		return Stream{}, err
+	}
+	svc.record(ctx, s, event.StreamUpdated, nil, map[string]any{"fields": fields, "pendingChanges": s.Status.PendingChanges})
+	return s, nil
+}
+
+// changed returns the paths, as in the stream resource, of the fields that
+// a new name and spec change in s.
+func changed(s Stream, name string, spec Spec) []string {
+	a := s.Spec
+	fields := []struct {
+		path string
+		same bool
+	}{
+		{"name", s.Name == name},
+		{"spec.formats", slices.Equal(a.Formats, spec.Formats)},
+		{"spec.segmentSeconds", a.SegmentDuration == spec.SegmentDuration},
+		{"spec.gopSeconds", a.GOPDuration == spec.GOPDuration},
+		{"spec.fps", a.FPS == spec.FPS},
+		{"spec.timezone", a.Timezone == spec.Timezone},
+		{"spec.overlay.renditionLabel", a.RenditionLabel == spec.RenditionLabel},
+		{"spec.video", slices.Equal(a.Video, spec.Video)},
+		{"spec.audio", slices.Equal(a.Audio, spec.Audio)},
+		{"spec.dash.addressing", a.DASHAddressing == spec.DASHAddressing},
+		{"spec.ads", reflect.DeepEqual(a.Ads, spec.Ads)},
+		{"spec.window.dvrSeconds", a.Window.DVR == spec.Window.DVR},
+		{"spec.window.retainSeconds", a.Window.Retain == spec.Window.Retain},
+	}
+	out := []string{}
+	for _, f := range fields {
+		if !f.same {
+			out = append(out, f.path)
+		}
+	}
+	return out
 }
 
 // sameMedia reports whether a and b produce the same media: they may differ
@@ -142,6 +202,7 @@ func (svc *Service) Delete(ctx context.Context, id string, ifMatch int) error {
 		return err
 	}
 	svc.rt.Drop(id)
+	svc.record(ctx, s, event.StreamDeleted, nil, nil)
 	if err := svc.breaks.DeleteAll(ctx, id); err != nil {
 		return fmt.Errorf("delete breaks of %s: %w", id, err)
 	}

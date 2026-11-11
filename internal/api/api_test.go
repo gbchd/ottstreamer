@@ -15,6 +15,7 @@ import (
 	"ottstreamer/internal/adbreak/adbreakmem"
 	"ottstreamer/internal/adbreak/adbreakscte35"
 	"ottstreamer/internal/api"
+	"ottstreamer/internal/event/eventtest"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/stream/streammem"
 )
@@ -42,8 +43,9 @@ func newServer(t *testing.T) (*httptest.Server, *time.Time) {
 	now := t0
 	repo := streammem.NewRepository()
 	clock := func() time.Time { return now }
-	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), clock)
-	svc := stream.NewService(repo, repo, nopRuntimes{}, breaks, clock)
+	events := &eventtest.Recorder{}
+	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), events, clock)
+	svc := stream.NewService(repo, repo, nopRuntimes{}, breaks, events, clock)
 	mux := http.NewServeMux()
 	api.Register(mux, svc, breaks, clock, slog.New(slog.DiscardHandler))
 	srv := httptest.NewServer(mux)

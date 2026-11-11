@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"ottstreamer/internal/event"
 	"ottstreamer/internal/stream"
 )
 
@@ -136,12 +137,22 @@ func TestService_Resume(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.rt.launched = nil
+	e.events.Events()
 
 	if err := e.svc.Resume(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(e.rt.launched, []string{"ended", "running"}) {
 		t.Errorf("launched %v", e.rt.launched)
+	}
+	var resumed []string
+	for _, ev := range e.events.Events() {
+		if ev.Type == event.RuntimeResumed {
+			resumed = append(resumed, ev.StreamID+" "+ev.Data["state"].(string))
+		}
+	}
+	if !slices.Equal(resumed, []string{"ended ended", "running running"}) {
+		t.Errorf("runtime.resumed for %v", resumed)
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+
+	"ottstreamer/internal/event"
 )
 
 // maxDuration bounds a break, which keeps every duration well inside the
@@ -99,6 +101,10 @@ func (s *Service) Add(ctx context.Context, streamID string, req AddRequest) (Bre
 			return Break{}, fmt.Errorf("save break %s: %w", r.ID, err)
 		}
 	}
+	for _, r := range replaced {
+		s.events.Record(ctx, sn.changeEvent(r))
+	}
+	s.events.Record(ctx, sn.event(event.BreakScheduled, b, b.StartSeg))
 	return s.complete(sn, b)
 }
 
@@ -126,6 +132,7 @@ func (s *Service) Delete(ctx context.Context, streamID, breakID string) (Break, 
 	if err := s.repo.Save(ctx, b); err != nil {
 		return Break{}, fmt.Errorf("save break %s: %w", b.ID, err)
 	}
+	s.events.Record(ctx, sn.changeEvent(b))
 	return s.complete(sn, b)
 }
 
@@ -137,6 +144,10 @@ func (s *Service) Delete(ctx context.Context, streamID, breakID string) (Break, 
 func (s *Service) Trim(ctx context.Context, streamID string, epoch int, endSeg int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	sn, err := s.currentEpoch(ctx, streamID, epoch)
+	if err != nil {
+		return err
+	}
 	stored, err := s.repo.List(ctx, streamID, epoch)
 	if err != nil {
 		return err
@@ -146,6 +157,7 @@ func (s *Service) Trim(ctx context.Context, streamID string, epoch int, endSeg i
 			if err := s.repo.Save(ctx, t); err != nil {
 				return fmt.Errorf("save break %s: %w", b.ID, err)
 			}
+			s.events.Record(ctx, sn.changeEvent(t))
 		}
 	}
 	return nil

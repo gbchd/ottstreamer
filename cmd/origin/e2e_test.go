@@ -19,12 +19,15 @@ import (
 	"ottstreamer/internal/adbreak/adbreakmem"
 	"ottstreamer/internal/adbreak/adbreakscte35"
 	"ottstreamer/internal/apikey"
+	"ottstreamer/internal/event"
+	"ottstreamer/internal/event/eventmem"
 	"ottstreamer/internal/live"
 	"ottstreamer/internal/live/liveffmpeg"
 	"ottstreamer/internal/live/livemp4"
 	"ottstreamer/internal/metrics"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/stream/streammem"
+	"ottstreamer/internal/ulid"
 )
 
 // clock is a wall clock the test moves by hand.
@@ -71,10 +74,12 @@ func newE2E(t *testing.T, t0 time.Time) *e2e {
 		t.Fatal(err)
 	}
 	repo := streammem.NewRepository()
-	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), c.now)
+	var ids ulid.Generator
+	events := event.NewService(eventmem.NewRepository(eventsPerStream), c.now, ids.New, func(event.Event) {}, logger)
+	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), events, c.now)
 	mgr := live.NewManager(enc, livemp4.NewWriter(), breaks, 64<<20, 2, met, c.now, logger)
 	t.Cleanup(mgr.Close)
-	streams := stream.NewService(repo, repo, mgr, breaks, c.now)
+	streams := stream.NewService(repo, repo, mgr, breaks, events, c.now)
 	met.WatchCache(mgr)
 	auth, err := apikey.New([]string{"e2e:write:" + e2eKey})
 	if err != nil {

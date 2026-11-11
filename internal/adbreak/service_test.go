@@ -11,6 +11,7 @@ import (
 
 	"ottstreamer/internal/adbreak"
 	"ottstreamer/internal/adbreak/adbreakmem"
+	"ottstreamer/internal/event/eventtest"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/stream/streammem"
 	"ottstreamer/internal/stream/streamtest"
@@ -46,17 +47,18 @@ type fixture struct {
 	now     time.Time
 	streams *stream.Service
 	breaks  *adbreak.Service
+	events  *eventtest.Recorder
 }
 
 // newFixture starts stream "s" at t0, with in-band signals and the spec
 // edited by edit.
 func newFixture(t *testing.T, edit func(*stream.Spec)) *fixture {
 	t.Helper()
-	f := &fixture{now: t0}
+	f := &fixture{now: t0, events: &eventtest.Recorder{}}
 	clock := func() time.Time { return f.now }
 	repo := streammem.NewRepository()
-	f.breaks = adbreak.NewService(repo, adbreakmem.NewRepository(), fakeCues{}, clock)
-	f.streams = stream.NewService(repo, repo, nopRuntimes{}, f.breaks, clock)
+	f.breaks = adbreak.NewService(repo, adbreakmem.NewRepository(), fakeCues{}, f.events, clock)
+	f.streams = stream.NewService(repo, repo, nopRuntimes{}, f.breaks, f.events, clock)
 	spec := streamtest.Spec()
 	spec.Ads.DASH = []string{"eventstream-bin", "inband"}
 	if edit != nil {
@@ -69,6 +71,7 @@ func newFixture(t *testing.T, edit func(*stream.Spec)) *fixture {
 	if _, err := f.streams.Start(t.Context(), "s", &ast); err != nil {
 		t.Fatal(err)
 	}
+	f.events.Events() // stream events
 	return f
 }
 

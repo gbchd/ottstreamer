@@ -3,10 +3,14 @@ package stream_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
 
+	"ottstreamer/internal/event"
+	"ottstreamer/internal/event/eventtest"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/stream/streammem"
 	"ottstreamer/internal/stream/streamtest"
@@ -50,6 +54,7 @@ type env struct {
 	repo   *streammem.Repository
 	rt     *fakeRuntimes
 	breaks *fakeBreaks
+	events *eventtest.Recorder
 	now    time.Time
 }
 
@@ -59,9 +64,10 @@ func newEnv(t *testing.T) *env {
 		repo:   streammem.NewRepository(),
 		rt:     &fakeRuntimes{ended: map[string]int64{}},
 		breaks: &fakeBreaks{trimmed: map[string]int64{}},
+		events: &eventtest.Recorder{},
 		now:    t0,
 	}
-	e.svc = stream.NewService(e.repo, e.repo, e.rt, e.breaks, func() time.Time { return e.now })
+	e.svc = stream.NewService(e.repo, e.repo, e.rt, e.breaks, e.events, func() time.Time { return e.now })
 	return e
 }
 
@@ -194,5 +200,57 @@ func TestService_Delete(t *testing.T) {
 	}
 	if err := e.svc.Delete(t.Context(), "demo", 0); !errors.Is(err, stream.ErrNotFound) {
 		t.Errorf("delete unknown: %v, want ErrNotFound", err)
+	}
+}
+
+func TestService_events(t *testing.T) {
+	e := newEnv(t)
+	ctx := event.WithActor(t.Context(), "api:qa")
+	if _, err := e.svc.Create(ctx, stream.Stream{ID: "demo", Name: "demo", Spec: streamtest.Spec()}); err != nil {
+		t.Fatal(err)
+	}
+	s := e.start(t, "demo")
+	spec := s.Spec.Clone()
+	spec.FPS = 50
+	spec.Window.DVR = time.Minute
+	if _, err := e.svc.Replace(ctx, "demo", "renamed", spec, s.Version); err != nil {
+		t.Fatal(err)
+	}
+	e.now = e.now.Add(time.Minute)
+	if _, err := e.svc.Stop(ctx, "demo"); err != nil {
+		t.Fatal(err)
+	}
+	e.now = e.now.Add(time.Hour)
+	if err := e.svc.ExpireEnded(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.svc.Delete(ctx, "demo", 0); err != nil {
+		t.Fatal(err)
+	}
+
+	got := e.events.Events()
+	want := []string{
+		"stream.created api:qa epoch 0 map[name:demo]",
+		"stream.started system epoch 1 map[ast:" + t0.String() + "]",
+		"stream.updated api:qa epoch 1 map[fields:[name spec.fps spec.window.dvrSeconds] pendingChanges:true]",
+		"stream.stopped api:qa epoch 1 segment 33 map[]",
+		"stream.expired system epoch 1 segment 33 map[]",
+		"stream.deleted api:qa epoch 1 map[]",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("events %v", got)
+	}
+	for i, ev := range got {
+		line := fmt.Sprintf("%s %s epoch %d", ev.Type, ev.Actor, ev.Epoch)
+		if ev.Segment != nil {
+			line += fmt.Sprintf(" segment %d", *ev.Segment)
+		}
+		if line += fmt.Sprintf(" %v", ev.Data); line != want[i] {
+			t.Errorf("event %d:\n got %s\nwant %s", i, line, want[i])
+		}
+	}
+	// changed lists the fields of Spec one by one.
+	if n := reflect.TypeFor[stream.Spec]().NumField(); n != 11 {
+		t.Errorf("Spec has %d fields: add the new ones to changed in service.go, then update this count", n)
 	}
 }

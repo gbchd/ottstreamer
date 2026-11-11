@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"ottstreamer/internal/event"
 )
 
 // Start begins a new epoch: it freezes a snapshot of the spec and launches
@@ -47,6 +49,7 @@ func (svc *Service) Start(ctx context.Context, id string, ast *time.Time) (Strea
 		}
 		return Stream{}, fmt.Errorf("launch %s: %w", id, err)
 	}
+	svc.record(ctx, s, event.StreamStarted, nil, map[string]any{"ast": start})
 	return s, nil
 }
 
@@ -89,6 +92,7 @@ func (svc *Service) Stop(ctx context.Context, id string) (Stream, error) {
 		return Stream{}, fmt.Errorf("trim breaks of %s: %w", id, err)
 	}
 	svc.rt.End(id, end)
+	svc.record(ctx, s, event.StreamStopped, new(end), nil)
 	return s, nil
 }
 
@@ -106,7 +110,9 @@ func (svc *Service) Resume(ctx context.Context) error {
 		}
 		if err := svc.rt.Launch(ctx, s); err != nil {
 			errs = append(errs, fmt.Errorf("launch %s: %w", s.ID, err))
+			continue
 		}
+		svc.record(ctx, s, event.RuntimeResumed, nil, map[string]any{"state": string(s.Status.State)})
 	}
 	return errors.Join(errs...)
 }
@@ -138,6 +144,7 @@ func (svc *Service) ExpireEnded(ctx context.Context) error {
 			continue
 		}
 		svc.rt.Drop(s.ID)
+		svc.record(ctx, s, event.StreamExpired, e.EndSegment, nil)
 	}
 	return errors.Join(errs...)
 }

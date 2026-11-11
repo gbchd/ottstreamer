@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"ottstreamer/internal/event"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/timeline"
 )
@@ -48,6 +49,11 @@ type CueEncoder interface {
 	Encode(c Cue) ([]byte, error)
 }
 
+// Events records schedule changes.
+type Events interface {
+	Record(ctx context.Context, e event.Event)
+}
+
 // recurringEventBase is the SCTE-35 event ID of recurring break 0.
 const recurringEventBase = 0x80000000
 
@@ -65,6 +71,7 @@ type Service struct {
 	streams Streams
 	repo    Repository
 	cues    CueEncoder
+	events  Events
 	now     func() time.Time
 	// ponytail: one lock for every stream; per-stream locks if schedule
 	// changes ever contend.
@@ -72,8 +79,8 @@ type Service struct {
 }
 
 // NewService returns a Service.
-func NewService(streams Streams, repo Repository, cues CueEncoder, now func() time.Time) *Service {
-	return &Service{streams: streams, repo: repo, cues: cues, now: now}
+func NewService(streams Streams, repo Repository, cues CueEncoder, events Events, now func() time.Time) *Service {
+	return &Service{streams: streams, repo: repo, cues: cues, events: events, now: now}
 }
 
 // snapshot is what a schedule reads from its stream: the current epoch.
@@ -295,4 +302,28 @@ func (sn snapshot) cancel(b Break) Cue {
 	c := sn.cueOut(b)
 	c.Cancel, c.DurationTicks = true, 0
 	return c
+}
+
+// event returns an event of b at segment seg, with the break's ID, SCTE-35
+// event ID, source and real duration.
+func (sn snapshot) event(t event.Type, b Break, seg int64) event.Event {
+	source := "manual"
+	if b.Recurring {
+		source = "recurring"
+	}
+	return event.Event{StreamID: sn.streamID, Epoch: sn.epoch, Segment: new(seg), Type: t, Data: map[string]any{
+		"breakId":         b.ID,
+		"eventId":         b.EventID,
+		"source":          source,
+		"durationSeconds": (time.Duration(b.EndSeg-b.StartSeg) * sn.tl.SegDuration()).Seconds(),
+	}}
+}
+
+// changeEvent is the event of a break changed by b.stopped: cancelled, at
+// its start, or shortened, at its new end.
+func (sn snapshot) changeEvent(b Break) event.Event {
+	if b.Cancelled {
+		return sn.event(event.BreakCancelled, b, b.StartSeg)
+	}
+	return sn.event(event.BreakShortened, b, b.EndSeg)
 }
