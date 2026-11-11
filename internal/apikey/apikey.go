@@ -7,8 +7,11 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
+
+	"ottstreamer/internal/accesslog"
 )
 
 type key struct {
@@ -44,6 +47,7 @@ func New(entries []string) (func(http.Handler) http.Handler, error) {
 			case !k.write && r.Method != http.MethodGet && r.Method != http.MethodHead:
 				deny(w, http.StatusForbidden, "read-only API key")
 			default:
+				accesslog.Add(r.Context(), slog.String("key", k.name))
 				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), nameKey{}, k.name)))
 			}
 		})

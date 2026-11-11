@@ -24,6 +24,11 @@ import (
 
 var discardLogger = slog.New(slog.DiscardHandler)
 
+type nopMetrics struct{}
+
+func (nopMetrics) FFmpegStarted(string)        {}
+func (nopMetrics) FFmpegExited(string, string) {}
+
 // newEncoder returns an Encoder on the local ffmpeg, or skips the test.
 func newEncoder(t testing.TB) *Encoder {
 	t.Helper()
@@ -34,7 +39,7 @@ func newEncoder(t testing.TB) *Encoder {
 	if err != nil {
 		t.Skip("ffmpeg not installed")
 	}
-	e, err := NewEncoder(ffmpeg, t.TempDir(), 4, discardLogger)
+	e, err := NewEncoder(ffmpeg, t.TempDir(), 4, nopMetrics{}, discardLogger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +154,7 @@ func TestPriming(t *testing.T) {
 	e := newEncoder(t)
 	for _, a := range testStream(t).Spec.Audio {
 		out := filepath.Join(t.TempDir(), "a.mp4")
-		if err := e.run(t.Context(), 10*time.Second, buildAudioArgs(a, 25, out)); err != nil {
+		if err := e.run(t.Context(), "test", 10*time.Second, buildAudioArgs(a, 25, out)); err != nil {
 			t.Fatal(err)
 		}
 		f, err := readFile(out)
@@ -272,5 +277,63 @@ func BenchmarkEncoder_EncodeSegment(b *testing.B) {
 		if _, err := e.EncodeSegment(b.Context(), s, 7, false); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+type recordMetrics struct{ started, exited []string }
+
+func (m *recordMetrics) FFmpegStarted(id string) { m.started = append(m.started, id) }
+func (m *recordMetrics) FFmpegExited(id string, reason string) {
+	m.exited = append(m.exited, id+":"+reason)
+}
+
+// fakeFFmpeg returns an Encoder whose ffmpeg is a shell script.
+func fakeFFmpeg(t *testing.T, script string, m Metrics) *Encoder {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ffmpeg")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e, err := NewEncoder(path, t.TempDir(), 1, m, discardLogger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+func TestEncoder_Check(t *testing.T) {
+	const ok = `echo "ffmpeg version 9.0.2 Copyright (c) 2000-2026"; echo "configuration: --enable-gpl --enable-libx264"`
+	tests := []struct {
+		name, script, pin, want string
+	}{
+		{"no pin", ok, "", ""},
+		{"pinned", ok, "9.0.2", ""},
+		{"other version", ok, "8.1", "want pinned version 8.1"},
+		{"no libx264", `echo "ffmpeg version 9.0.2"; echo "configuration: --enable-gpl"`, "", "without libx264"},
+		{"garbage", `echo hello`, "", "no version line"},
+		{"fails", `exit 3`, "", "exit status 3"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := fakeFFmpeg(t, tt.script, nopMetrics{}).Check(t.Context(), tt.pin)
+			if (err == nil) != (tt.want == "") || (err != nil && !strings.Contains(err.Error(), tt.want)) {
+				t.Fatalf("Check = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestEncoder_runFailure(t *testing.T) {
+	m := &recordMetrics{}
+	e := fakeFFmpeg(t, `[ "$1" = hang ] && exec sleep 10; echo "Unknown encoder libx999" >&2; exit 1`, m)
+	err := e.run(t.Context(), "demo", time.Second, nil)
+	if err == nil || !strings.Contains(err.Error(), "Unknown encoder libx999") {
+		t.Fatalf("run = %v, want the stderr tail", err)
+	}
+	if err := e.run(t.Context(), "demo", 100*time.Millisecond, []string{"hang"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("run of a hanging ffmpeg = %v, want DeadlineExceeded", err)
+	}
+	if !slices.Equal(m.started, []string{"demo", "demo"}) || !slices.Equal(m.exited, []string{"demo:exit", "demo:timeout"}) {
+		t.Fatalf("metrics started %v, exited %v", m.started, m.exited)
 	}
 }

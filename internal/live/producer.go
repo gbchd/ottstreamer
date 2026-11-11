@@ -12,11 +12,14 @@ func (m *Manager) produce(rt *Runtime) {
 	ctx := rt.ctx
 	defer close(rt.done)
 	next := max(0, rt.Timeline().LiveEdge(m.now())+1)
+	rt.produced.Store(next - 1)
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
 		var finished bool
-		if next, finished = m.step(ctx, rt, next); finished {
+		next, finished = m.step(ctx, rt, next)
+		rt.produced.Store(next - 1)
+		if finished {
 			return
 		}
 		// The frozen horizon moves when the next segment is published.
@@ -64,6 +67,7 @@ func (m *Manager) produceOne(ctx context.Context, rt *Runtime, n int64) {
 		return
 	}
 	if late := m.now().Sub(rt.Timeline().SegEnd(n)); late > 0 {
+		m.metrics.SegmentLate(rt.stream.ID)
 		m.logger.WarnContext(ctx, "segment.late", "stream", rt.stream.ID, "epoch", rt.epoch, "segment", n, "late", late)
 	}
 }

@@ -160,6 +160,10 @@ func TestManager_WriteSegment_cachedByProducer(t *testing.T) {
 	if got := len(h.enc.encoded()); got != 4 {
 		t.Fatalf("%d encodes, want 4 (requests hit the cache)", got)
 	}
+	// 2 renditions × 100 bytes × 50 frames × 4 segments; the producer missed 4 times.
+	if bytes, hits, misses := h.m.CacheStats(); bytes != 40000 || hits != 4 || misses != 4 {
+		t.Fatalf("CacheStats = %d bytes, %d hits, %d misses; want 40000, 4, 4", bytes, hits, misses)
+	}
 }
 
 func TestManager_WriteSegment_inAd(t *testing.T) {

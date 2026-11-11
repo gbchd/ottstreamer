@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -168,22 +169,46 @@ func (c *clock) set(t time.Time) {
 	c.mu.Unlock()
 }
 
+type fakeMetrics struct {
+	mu          sync.Mutex
+	built, late int
+}
+
+func (m *fakeMetrics) SegmentBuilt(string, string, time.Duration) {
+	m.mu.Lock()
+	m.built++
+	m.mu.Unlock()
+}
+
+func (m *fakeMetrics) SegmentLate(string) {
+	m.mu.Lock()
+	m.late++
+	m.mu.Unlock()
+}
+
+func (m *fakeMetrics) counts() (built, late int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.built, m.late
+}
+
 type harness struct {
-	m     *Manager
-	enc   *fakeEncoder
-	w     *fakeWriter
-	sched *fakeSchedule
-	clock *clock
-	logs  *bytes.Buffer
+	m       *Manager
+	enc     *fakeEncoder
+	w       *fakeWriter
+	sched   *fakeSchedule
+	metrics *fakeMetrics
+	clock   *clock
+	logs    *bytes.Buffer
 }
 
 func newHarness(now func() time.Time) *harness {
-	h := &harness{enc: &fakeEncoder{}, w: &fakeWriter{}, sched: &fakeSchedule{}, clock: &clock{t: ast}, logs: &bytes.Buffer{}}
+	h := &harness{enc: &fakeEncoder{}, w: &fakeWriter{}, sched: &fakeSchedule{}, metrics: &fakeMetrics{}, clock: &clock{t: ast}, logs: &bytes.Buffer{}}
 	if now == nil {
 		now = h.clock.now
 	}
 	logger := slog.New(slog.NewTextHandler(h.logs, nil))
-	h.m = NewManager(h.enc, h.w, h.sched, 1<<20, 2, now, logger)
+	h.m = NewManager(h.enc, h.w, h.sched, 1<<20, 2, h.metrics, now, logger)
 	return h
 }
 
@@ -294,6 +319,31 @@ func TestManager_Close(t *testing.T) {
 		if _, ok := h.m.Runtime("a"); ok {
 			t.Fatal("runtime still there after Close")
 		}
+	})
+}
+
+func TestManager_Late(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newHarness(time.Now)
+		h.enc.gate = make(chan struct{}) // the encoder hangs
+		if err := h.m.Launch(t.Context(), running("a", time.Now())); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(4 * time.Second) // live edge 1, nothing produced: 2 behind
+		synctest.Wait()
+		if late := h.m.Late(2); len(late) != 0 {
+			t.Fatalf("Late(2) = %v at 2 segments behind, want none", late)
+		}
+		time.Sleep(2 * time.Second) // live edge 2: 3 behind
+		if late := h.m.Late(2); !slices.Equal(late, []string{"a"}) {
+			t.Fatalf("Late(2) = %v at 3 segments behind, want [a]", late)
+		}
+		close(h.enc.gate) // the producer catches up past the live edge
+		synctest.Wait()
+		if late := h.m.Late(2); len(late) != 0 {
+			t.Fatalf("Late(2) = %v after catching up, want none", late)
+		}
+		h.m.Close()
 	})
 }
 

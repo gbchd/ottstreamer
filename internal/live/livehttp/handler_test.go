@@ -61,6 +61,11 @@ func (fakeEncoder) EncodeSegment(_ context.Context, s stream.Stream, _ int64, _ 
 }
 
 // fakeWriter writes a readable summary of the fragment.
+type nopMetrics struct{}
+
+func (nopMetrics) SegmentBuilt(string, string, time.Duration) {}
+func (nopMetrics) SegmentLate(string)                         {}
+
 type fakeWriter struct{}
 
 func (fakeWriter) WriteSegment(w io.Writer, f live.Fragment) error {
@@ -164,7 +169,7 @@ func newServer(t *testing.T) *httptest.Server {
 	}
 	clock := func() time.Time { return now }
 	logger := slog.New(slog.DiscardHandler)
-	mgr := live.NewManager(fakeEncoder{}, fakeWriter{}, breaks, 1<<20, 1, clock, logger)
+	mgr := live.NewManager(fakeEncoder{}, fakeWriter{}, breaks, 1<<20, 1, nopMetrics{}, clock, logger)
 	t.Cleanup(mgr.Close)
 	for _, s := range streams {
 		if err := mgr.Launch(t.Context(), s); err != nil {

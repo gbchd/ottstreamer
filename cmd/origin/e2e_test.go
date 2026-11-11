@@ -18,12 +18,11 @@ import (
 	"ottstreamer/internal/adbreak"
 	"ottstreamer/internal/adbreak/adbreakmem"
 	"ottstreamer/internal/adbreak/adbreakscte35"
-	"ottstreamer/internal/api"
-	"ottstreamer/internal/cors"
+	"ottstreamer/internal/apikey"
 	"ottstreamer/internal/live"
 	"ottstreamer/internal/live/liveffmpeg"
-	"ottstreamer/internal/live/livehttp"
 	"ottstreamer/internal/live/livemp4"
+	"ottstreamer/internal/metrics"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/stream/streammem"
 )
@@ -65,20 +64,27 @@ func newE2E(t *testing.T, t0 time.Time) *e2e {
 	}
 	c := &clock{t: t0}
 	logger := slog.New(slog.DiscardHandler)
-	enc, err := liveffmpeg.NewEncoder("ffmpeg", t.TempDir(), 4, logger)
+	met := metrics.New()
+	tmp := t.TempDir()
+	enc, err := liveffmpeg.NewEncoder("ffmpeg", tmp, 4, met, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
 	repo := streammem.NewRepository()
 	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), c.now)
-	mgr := live.NewManager(enc, livemp4.NewWriter(), breaks, 64<<20, 2, c.now, logger)
+	mgr := live.NewManager(enc, livemp4.NewWriter(), breaks, 64<<20, 2, met, c.now, logger)
 	t.Cleanup(mgr.Close)
 	streams := stream.NewService(repo, repo, mgr, breaks, c.now)
+	met.WatchCache(mgr)
+	auth, err := apikey.New([]string{"e2e:write:" + e2eKey})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	mux := http.NewServeMux()
-	api.Register(mux, streams, breaks, c.now, logger)
-	livehttp.NewHandler(mgr, repo, breaks, c.now, logger).Register(mux)
-	srv := httptest.NewServer(cors.New(nil, mux))
+	srv := httptest.NewServer(handler(deps{
+		auth: auth, streams: streams, breaks: breaks, mgr: mgr, repo: repo,
+		ready: readiness(t.Context(), repo, enc, mgr, tmp, ""), metrics: met, now: c.now, logger: logger,
+	}))
 	t.Cleanup(srv.Close)
 	return &e2e{t: t, srv: srv, clock: c}
 }
@@ -90,6 +96,7 @@ func (e *e2e) do(method, path, body string, want int) []byte {
 		e.t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+e2eKey)
 	res, err := e.srv.Client().Do(req)
 	if err != nil {
 		e.t.Fatal(err)
@@ -153,6 +160,8 @@ func near(v byte, want int) bool {
 	return int(v) >= want-6 && int(v) <= want+6
 }
 
+const e2eKey = "e2e-secret"
+
 const e2eStream = `{"id": "e2e", "name": "End to end", "spec": {
   "formats": ["hls", "dash"],
   "segmentSeconds": 1,
@@ -173,6 +182,11 @@ func TestEndToEnd(t *testing.T) {
 	e := newE2E(t, t0)
 	e.do(http.MethodPost, "/api/streams", e2eStream, http.StatusCreated)
 	e.do(http.MethodPost, "/api/streams/e2e/start", "", http.StatusOK) // AST = t0
+	// The test clock jumps ahead of the producer from here on, so check
+	// readiness while nothing is published yet.
+	if ready := string(e.do(http.MethodGet, "/readyz", "", http.StatusOK)); ready != "{\"status\":\"ready\"}\n" {
+		t.Errorf("readyz: %s", ready)
+	}
 
 	// Live edge 4, frozen horizon 6: a 3 s break 5 s from now starts at 10.
 	e.clock.set(t0.Add(5 * time.Second))
@@ -264,4 +278,17 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("ended MPD:\n%s", mpd)
 	}
 	e.live("180p/17.m4s")
+
+	prom := string(e.do(http.MethodGet, "/metrics", "", http.StatusOK))
+	for _, want := range []string{
+		`segments_built_total{kind="video",stream="e2e"}`,
+		`http_requests_total{kind="segment",route="GET /live/{stream}/{rendition}/{segment}",status="200"}`,
+		`http_requests_total{kind="api",route="POST /api/streams/{id}/breaks",status="201"} 1`,
+		`ffmpeg_running{stream="e2e"} `, // the producer may be encoding
+		"cache_hits_total ",
+	} {
+		if !strings.Contains(prom, want) {
+			t.Errorf("metrics lack %s", want)
+		}
+	}
 }

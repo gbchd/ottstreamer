@@ -42,6 +42,9 @@ func TestManager_step(t *testing.T) {
 	if !strings.Contains(h.logs.String(), "segment.late") {
 		t.Fatalf("segments 9 and 10 finished after their publication, no segment.late in %q", h.logs)
 	}
+	if built, late := h.metrics.counts(); built != 6 || late != 2 {
+		t.Fatalf("metrics built %d, late %d; want 6, 2", built, late)
+	}
 }
 
 func TestManager_produceUpTo_parallelism(t *testing.T) {

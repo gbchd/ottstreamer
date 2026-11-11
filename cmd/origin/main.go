@@ -12,9 +12,11 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
+	"ottstreamer/internal/accesslog"
 	"ottstreamer/internal/adbreak"
 	"ottstreamer/internal/adbreak/adbreakmem"
 	"ottstreamer/internal/adbreak/adbreakscte35"
@@ -22,16 +24,18 @@ import (
 	"ottstreamer/internal/apikey"
 	"ottstreamer/internal/config"
 	"ottstreamer/internal/cors"
+	"ottstreamer/internal/health"
 	"ottstreamer/internal/live"
 	"ottstreamer/internal/live/liveffmpeg"
 	"ottstreamer/internal/live/livehttp"
 	"ottstreamer/internal/live/livemp4"
+	"ottstreamer/internal/metrics"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/stream/streammem"
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger := slog.New(accesslog.WithRequestID(slog.NewJSONHandler(os.Stdout, nil)))
 	if err := run(logger); err != nil {
 		logger.ErrorContext(context.Background(), "origin failed", "error", err)
 		os.Exit(1)
@@ -66,14 +70,20 @@ func run(logger *slog.Logger) error {
 			logger.ErrorContext(ctx, "remove tmp dir", "dir", tmp, "error", err)
 		}
 	}()
-	enc, err := liveffmpeg.NewEncoder(cfg.FFmpeg, tmp, cfg.MaxFFmpeg, logger)
+	met := metrics.New()
+	enc, err := liveffmpeg.NewEncoder(cfg.FFmpeg, tmp, cfg.MaxFFmpeg, met, logger)
 	if err != nil {
 		return fmt.Errorf("ffmpeg encoder: %w", err)
+	}
+	if v, err := enc.Check(ctx, cfg.FFmpegVersion); err != nil {
+		logger.WarnContext(ctx, "ffmpeg check failed, /readyz answers 503", "error", err)
+	} else {
+		logger.InfoContext(ctx, "ffmpeg found", "version", v)
 	}
 
 	repo := streammem.NewRepository()
 	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), time.Now)
-	mgr := live.NewManager(enc, livemp4.NewWriter(), breaks, cfg.CacheBytes, cfg.ProducerParallelism, time.Now, logger)
+	mgr := live.NewManager(enc, livemp4.NewWriter(), breaks, cfg.CacheBytes, cfg.ProducerParallelism, met, time.Now, logger)
 	defer mgr.Close() // after the server has drained, before the tmp dir goes
 	streams := stream.NewService(repo, repo, mgr, breaks, time.Now)
 	if err := streams.Resume(ctx); err != nil {
@@ -81,18 +91,16 @@ func run(logger *slog.Logger) error {
 	}
 	go expireEnded(ctx, streams, logger)
 
-	apiMux := http.NewServeMux()
-	api.Register(apiMux, streams, breaks, time.Now, logger)
-	mux := http.NewServeMux()
-	mux.Handle("/api/", auth(apiMux))
-	mux.Handle("/api/time", apiMux) // open, more specific than /api/
-	livehttp.NewHandler(mgr, repo, breaks, time.Now, logger).Register(mux)
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ottstreamer origin\n")) })
+	met.WatchCache(mgr)
+	met.WatchStreams(func() (map[string]int, error) { return countByState(ctx, repo) })
+	ready := readiness(ctx, repo, enc, mgr, tmp, cfg.FFmpegVersion)
 
 	srv := &http.Server{
-		Addr:              cfg.Listen,
-		Handler:           recoverer(logger, cors.New(cfg.CORSAPIOrigins, mux)),
+		Addr: cfg.Listen,
+		Handler: handler(deps{
+			auth: auth, apiOrigins: cfg.CORSAPIOrigins, streams: streams, breaks: breaks, mgr: mgr, repo: repo,
+			ready: ready, metrics: met, now: time.Now, logger: logger,
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errc := make(chan error, 1)
@@ -104,10 +112,81 @@ func run(logger *slog.Logger) error {
 		return err
 	case <-ctx.Done():
 	}
-	logger.InfoContext(ctx, "shutting down")
+	logger.InfoContext(ctx, "shutting down", "delay", cfg.ShutdownDelay)
+	time.Sleep(cfg.ShutdownDelay) // /readyz answers 503 meanwhile
 	drain, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	return srv.Shutdown(drain)
+}
+
+// deps are what the HTTP pipeline serves.
+type deps struct {
+	auth       func(http.Handler) http.Handler
+	apiOrigins []string
+	streams    *stream.Service
+	breaks     *adbreak.Service
+	mgr        *live.Manager
+	repo       *streammem.Repository
+	ready      http.Handler
+	metrics    *metrics.Metrics
+	now        func() time.Time
+	logger     *slog.Logger
+}
+
+// handler is the request pipeline: recover > request ID, access log and
+// metrics > CORS > auth (/api except /api/time) > route.
+func handler(d deps) http.Handler {
+	apiMux := http.NewServeMux()
+	api.Register(apiMux, d.streams, d.breaks, d.now, d.logger)
+	mux := http.NewServeMux()
+	mux.Handle("/api/", d.auth(accesslog.Routed(apiMux)))
+	mux.Handle("/api/time", apiMux) // open, more specific than /api/
+	livehttp.NewHandler(d.mgr, d.repo, d.breaks, d.now, d.logger).Register(mux)
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
+	mux.Handle("GET /readyz", d.ready)
+	mux.Handle("GET /metrics", d.metrics.Handler())
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ottstreamer origin\n")) })
+	return recoverer(d.logger, accesslog.New(d.logger, d.metrics, cors.New(d.apiOrigins, mux)))
+}
+
+// readiness is /readyz. It turns 503 once ctx, the process's lifetime, is done.
+func readiness(ctx context.Context, repo stream.Repository, enc *liveffmpeg.Encoder, mgr *live.Manager, tmp, ffmpegPin string) http.Handler {
+	return health.Ready(
+		health.Check{Name: "repository", Run: func(ctx context.Context) error {
+			_, err := repo.List(ctx) // ponytail: a DB ping once there is a DB
+			return err
+		}},
+		health.Check{Name: "ffmpeg", Run: func(ctx context.Context) error {
+			_, err := enc.Check(ctx, ffmpegPin)
+			return err
+		}},
+		health.Check{Name: "tmp", Run: health.Writable(tmp)},
+		health.Check{Name: "producers", Run: func(context.Context) error {
+			if late := mgr.Late(2); len(late) > 0 {
+				return fmt.Errorf("more than 2 segments late: %s", strings.Join(late, ", "))
+			}
+			return nil
+		}},
+		health.Check{Name: "shutdown", Run: func(context.Context) error {
+			if ctx.Err() != nil {
+				return errors.New("shutting down")
+			}
+			return nil
+		}},
+	)
+}
+
+// countByState counts the streams in each state, zeros included.
+func countByState(ctx context.Context, repo stream.Repository) (map[string]int, error) {
+	ss, err := repo.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	counts := map[string]int{string(stream.StateStopped): 0, string(stream.StateRunning): 0, string(stream.StateEnded): 0}
+	for _, s := range ss {
+		counts[string(s.Status.State)]++
+	}
+	return counts, nil
 }
 
 // expireEnded moves ended streams past their retention to stopped.

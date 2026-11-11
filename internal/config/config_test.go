@@ -3,18 +3,19 @@ package config_test
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"ottstreamer/internal/config"
 )
 
 func TestLoad(t *testing.T) {
-	env := map[string]string{"ORIGIN_LISTEN": ":9000", "ORIGIN_API_KEYS": "a:read:x, b:write:y"}
-	c, err := config.Load([]string{"-listen", ":1", "-max-ffmpeg", "3", "-cors-api-origins", "https://ui.example"},
+	env := map[string]string{"ORIGIN_LISTEN": ":9000", "ORIGIN_API_KEYS": "a:read:x, b:write:y", "ORIGIN_SHUTDOWN_DELAY": "5s"}
+	c, err := config.Load([]string{"-listen", ":1", "-max-ffmpeg", "3", "-cors-api-origins", "https://ui.example", "-ffmpeg-version", "9.0.2"},
 		func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Listen != ":9000" || c.MaxFFmpeg != 3 || c.ProducerParallelism != 2 ||
+	if c.Listen != ":9000" || c.MaxFFmpeg != 3 || c.ProducerParallelism != 2 || c.ShutdownDelay != 5*time.Second || c.FFmpegVersion != "9.0.2" ||
 		!slices.Equal(c.APIKeys, []string{"a:read:x", "b:write:y"}) || !slices.Equal(c.CORSAPIOrigins, []string{"https://ui.example"}) {
 		t.Errorf("Load = %+v", c)
 	}

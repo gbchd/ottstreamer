@@ -31,13 +31,23 @@ import (
 
 var _ live.Encoder = (*Encoder)(nil)
 
+// Metrics counts ffmpeg processes.
+type Metrics interface {
+	// FFmpegStarted records a process started for a stream.
+	FFmpegStarted(streamID string)
+	// FFmpegExited records its end: reason is "" when it succeeded or was
+	// cancelled, else "timeout" or "exit".
+	FFmpegExited(streamID, reason string)
+}
+
 // Encoder runs ffmpeg, at most maxProcs processes at a time.
 type Encoder struct {
-	ffmpeg string
-	tmpDir string
-	font   string
-	sem    chan struct{}
-	logger *slog.Logger
+	ffmpeg  string
+	tmpDir  string
+	font    string
+	sem     chan struct{}
+	metrics Metrics
+	logger  *slog.Logger
 
 	mu       sync.Mutex
 	overlays map[string]bool // overlay cycle files already rendered
@@ -45,7 +55,7 @@ type Encoder struct {
 
 // NewEncoder checks that ffmpegPath runs and writes the Go Mono font into
 // tmpDir, where every run also gets its own scratch directory.
-func NewEncoder(ffmpegPath, tmpDir string, maxProcs int, logger *slog.Logger) (*Encoder, error) {
+func NewEncoder(ffmpegPath, tmpDir string, maxProcs int, metrics Metrics, logger *slog.Logger) (*Encoder, error) {
 	if maxProcs < 1 {
 		return nil, fmt.Errorf("maxProcs %d: must be at least 1", maxProcs)
 	}
@@ -60,7 +70,31 @@ func NewEncoder(ffmpegPath, tmpDir string, maxProcs int, logger *slog.Logger) (*
 	if err := os.WriteFile(font, gomono.TTF, 0o600); err != nil {
 		return nil, fmt.Errorf("write font: %w", err)
 	}
-	return &Encoder{ffmpeg: path, tmpDir: tmpDir, font: font, sem: make(chan struct{}, maxProcs), logger: logger, overlays: map[string]bool{}}, nil
+	return &Encoder{ffmpeg: path, tmpDir: tmpDir, font: font, sem: make(chan struct{}, maxProcs), metrics: metrics, logger: logger, overlays: map[string]bool{}}, nil
+}
+
+// Check runs ffmpeg -version and returns the version it reports. It fails
+// when ffmpeg does not run, lacks libx264, or differs from pin (when set):
+// segments are byte-identical only across replicas on the same ffmpeg.
+func (e *Encoder) Check(ctx context.Context, pin string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, e.ffmpeg, "-hide_banner", "-version").Output() //nolint:gosec // the binary is operator config
+	if err != nil {
+		return "", fmt.Errorf("ffmpeg -version: %w", err)
+	}
+	f := strings.Fields(string(out)) // ffmpeg version 9.0.2 Copyright ...
+	if len(f) < 3 || f[0] != "ffmpeg" || f[1] != "version" {
+		return "", errors.New("ffmpeg -version: no version line")
+	}
+	v := f[2]
+	switch {
+	case !bytes.Contains(out, []byte("--enable-libx264")):
+		return v, fmt.Errorf("ffmpeg %s: built without libx264", v)
+	case pin != "" && v != pin:
+		return v, fmt.Errorf("ffmpeg %s: want pinned version %s", v, pin)
+	}
+	return v, nil
 }
 
 // EncodeSegment encodes video segment n of s's current epoch for every
@@ -132,13 +166,13 @@ func (e *Encoder) encodeVideo(ctx context.Context, s stream.Stream, n int64, inA
 	}
 	defer os.RemoveAll(dir) // best effort: scratch files only
 
-	overlays, err := e.overlayFile(ctx, ep.Spec)
+	overlays, err := e.overlayFile(ctx, s.ID, ep.Spec)
 	if err != nil {
 		return nil, err
 	}
 	tl := ep.Timeline()
 	timeout := max(2*tl.SegDuration(), 10*time.Second)
-	if err := e.run(ctx, timeout, buildVideoArgs(*ep, n, loc, inAd, e.font, overlays, dir)); err != nil {
+	if err := e.run(ctx, s.ID, timeout, buildVideoArgs(*ep, n, loc, inAd, e.font, overlays, dir)); err != nil {
 		return nil, fmt.Errorf("segment %d: %w", n, err)
 	}
 	files := make(map[string]*mp4.File, len(ep.Spec.Video))
@@ -157,7 +191,7 @@ func (e *Encoder) encodeVideo(ctx context.Context, s stream.Stream, n int64, inA
 
 // overlayFile returns the overlay cycle file for spec, rendering it on first
 // use. Streams with the same picture geometry, fps and beep share one file.
-func (e *Encoder) overlayFile(ctx context.Context, spec stream.Spec) (string, error) {
+func (e *Encoder) overlayFile(ctx context.Context, streamID string, spec stream.Spec) (string, error) {
 	sum := sha256.Sum256([]byte(strings.Join(buildOverlayArgs(spec, ""), "\x00")))
 	path := filepath.Join(e.tmpDir, fmt.Sprintf("overlays-%x.nut", sum[:8]))
 	e.mu.Lock()
@@ -165,7 +199,7 @@ func (e *Encoder) overlayFile(ctx context.Context, spec stream.Spec) (string, er
 	if e.overlays[path] {
 		return path, nil
 	}
-	if err := e.run(ctx, 30*time.Second, buildOverlayArgs(spec, path)); err != nil {
+	if err := e.run(ctx, streamID, 30*time.Second, buildOverlayArgs(spec, path)); err != nil {
 		return "", fmt.Errorf("overlays: %w", err)
 	}
 	e.overlays[path] = true
@@ -190,7 +224,7 @@ func (e *Encoder) audioTrack(ctx context.Context, s stream.Stream, a stream.Audi
 	defer os.RemoveAll(dir) // best effort: scratch files only
 
 	out := filepath.Join(dir, a.ID+".mp4")
-	if err := e.run(ctx, 10*time.Second, buildAudioArgs(a, s.Status.Epoch.Spec.FPS, out)); err != nil {
+	if err := e.run(ctx, s.ID, 10*time.Second, buildAudioArgs(a, s.Status.Epoch.Spec.FPS, out)); err != nil {
 		return live.Track{}, fmt.Errorf("audio %s: %w", a.ID, err)
 	}
 	f, err := readFile(out)
@@ -204,9 +238,10 @@ func (e *Encoder) audioTrack(ctx context.Context, s stream.Stream, a stream.Audi
 	return t, nil
 }
 
-// run runs ffmpeg with args once a process slot is free. The whole process
-// group is killed on cancel or after timeout.
-func (e *Encoder) run(ctx context.Context, timeout time.Duration, args []string) error {
+// run runs ffmpeg for a stream with args once a process slot is free. The
+// whole process group is killed on cancel or after timeout. A failure's
+// error ends with the tail of ffmpeg's stderr.
+func (e *Encoder) run(ctx context.Context, streamID string, timeout time.Duration, args []string) (err error) {
 	select {
 	case e.sem <- struct{}{}:
 	case <-ctx.Done():
@@ -216,6 +251,17 @@ func (e *Encoder) run(ctx context.Context, timeout time.Duration, args []string)
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	e.metrics.FFmpegStarted(streamID)
+	defer func() {
+		var reason string
+		switch {
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			reason = "timeout"
+		case err != nil && ctx.Err() == nil:
+			reason = "exit"
+		}
+		e.metrics.FFmpegExited(streamID, reason)
+	}()
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, e.ffmpeg, args...) //nolint:gosec // the binary is operator config, args are built here
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -223,7 +269,7 @@ func (e *Encoder) run(ctx context.Context, timeout time.Duration, args []string)
 	cmd.WaitDelay = time.Second
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	if ctx.Err() != nil {
 		err = errors.Join(ctx.Err(), err)
 	}

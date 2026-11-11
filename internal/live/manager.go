@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,16 +25,26 @@ type Schedule interface {
 	Signals(ctx context.Context, streamID string, epoch int, n int64) ([]adbreak.Signal, error)
 }
 
+// Metrics counts the segments the runtime builds.
+type Metrics interface {
+	// SegmentBuilt records one encoded segment set of a track kind (video).
+	SegmentBuilt(streamID, kind string, took time.Duration)
+	// SegmentLate records a segment the producer finished after it was published.
+	SegmentLate(streamID string)
+}
+
 // Manager owns one Runtime per running or ended stream.
 type Manager struct {
-	enc         Encoder
-	w           SegmentWriter
-	sched       Schedule
-	parallelism int
-	now         func() time.Time
-	logger      *slog.Logger
-	cache       *cache
-	flight      singleflight.Group
+	enc          Encoder
+	w            SegmentWriter
+	sched        Schedule
+	parallelism  int
+	metrics      Metrics
+	now          func() time.Time
+	logger       *slog.Logger
+	cache        *cache
+	flight       singleflight.Group
+	hits, misses atomic.Int64
 
 	mu       sync.Mutex
 	runtimes map[string]*Runtime
@@ -42,17 +53,49 @@ type Manager struct {
 // NewManager returns a Manager whose segment cache holds up to cacheBytes of
 // encoded video and whose producers encode up to parallelism segments of a
 // stream at once.
-func NewManager(enc Encoder, w SegmentWriter, sched Schedule, cacheBytes int64, parallelism int, now func() time.Time, logger *slog.Logger) *Manager {
+func NewManager(enc Encoder, w SegmentWriter, sched Schedule, cacheBytes int64, parallelism int, metrics Metrics, now func() time.Time, logger *slog.Logger) *Manager {
 	return &Manager{
 		enc:         enc,
 		w:           w,
 		sched:       sched,
 		parallelism: max(parallelism, 1),
+		metrics:     metrics,
 		now:         now,
 		logger:      logger,
 		cache:       newCache(cacheBytes),
 		runtimes:    make(map[string]*Runtime),
 	}
+}
+
+// CacheStats returns the bytes the segment cache holds and its hit and miss
+// counts since start.
+func (m *Manager) CacheStats() (bytes, hits, misses int64) {
+	return m.cache.bytes(), m.hits.Load(), m.misses.Load()
+}
+
+// Late returns the streams whose producer is more than maxSegs segments
+// behind the live edge, sorted.
+func (m *Manager) Late(maxSegs int64) []string {
+	m.mu.Lock()
+	all := make([]*Runtime, 0, len(m.runtimes))
+	for _, rt := range m.runtimes {
+		all = append(all, rt)
+	}
+	m.mu.Unlock()
+	now := m.now()
+	var late []string
+	for _, rt := range all {
+		select {
+		case <-rt.done: // fully produced
+			continue
+		default:
+		}
+		if rt.Timeline().LiveEdge(now)-rt.produced.Load() > maxSegs {
+			late = append(late, rt.stream.ID)
+		}
+	}
+	slices.Sort(late)
+	return late
 }
 
 // Runtime is the in-process media side of one epoch. It is safe for
@@ -63,6 +106,8 @@ type Runtime struct {
 	tl     timeline.Timeline
 	endSeg atomic.Int64
 	tracks map[string]Track
+
+	produced atomic.Int64 // the producer has encoded every segment up to this one
 
 	ctx    context.Context // lives until the runtime is dropped
 	cancel context.CancelFunc

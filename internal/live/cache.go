@@ -67,6 +67,12 @@ func (c *cache) put(k segKey, set map[string][]Sample) {
 	}
 }
 
+func (c *cache) bytes() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.size
+}
+
 // purge removes every segment set of one epoch of a stream.
 func (c *cache) purge(streamID string, epoch int) {
 	c.mu.Lock()

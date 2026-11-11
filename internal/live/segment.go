@@ -97,8 +97,10 @@ func (m *Manager) segmentSet(ctx context.Context, rt *Runtime, n int64) (map[str
 	}
 	key := segKey{stream: rt.stream.ID, epoch: rt.epoch, n: n, inAd: inAd}
 	if set, ok := m.cache.get(key); ok {
+		m.hits.Add(1)
 		return set, nil
 	}
+	m.misses.Add(1)
 	v, err, _ := m.flight.Do(key.String(), func() (any, error) {
 		if set, ok := m.cache.get(key); ok {
 			return set, nil
@@ -119,6 +121,7 @@ func (m *Manager) segmentSet(ctx context.Context, rt *Runtime, n int64) (map[str
 // encode runs the encoder on the runtime's context, so a request that goes
 // away does not cancel a build other callers share. It retries once.
 func (m *Manager) encode(rt *Runtime, n int64, inAd bool) (map[string][]Sample, error) {
+	start := m.now()
 	set, err := m.enc.EncodeSegment(rt.ctx, rt.stream, n, inAd)
 	if err != nil && rt.ctx.Err() == nil {
 		set, err = m.enc.EncodeSegment(rt.ctx, rt.stream, n, inAd)
@@ -126,6 +129,7 @@ func (m *Manager) encode(rt *Runtime, n int64, inAd bool) (map[string][]Sample, 
 	if err != nil {
 		return nil, fmt.Errorf("%w: segment %d of %s: %w", ErrUnavailable, n, rt.stream.ID, err)
 	}
+	m.metrics.SegmentBuilt(rt.stream.ID, "video", m.now().Sub(start))
 	return set, nil
 }
 
