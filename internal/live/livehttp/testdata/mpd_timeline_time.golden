@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" xmlns:scte35="http://www.scte.org/schemas/35" type="dynamic" profiles="urn:mpeg:dash:profile:isoff-live:2011,urn:mpeg:dash:profile:cmaf:2019" availabilityStartTime="2026-11-06T18:00:00Z" publishTime="2026-11-06T18:16:40.500Z" minimumUpdatePeriod="PT2S" timeShiftBufferDepth="PT30S" suggestedPresentationDelay="PT6S" minBufferTime="PT2S">
+  <Period id="e3" start="PT0S">
+    <EventStream schemeIdUri="urn:scte:scte35:2014:xml+bin" timescale="90000">
+      <Event id="6" presentationTime="86400000" duration="1260000">
+        <scte35:Signal>
+          <scte35:Binary>/DAlAAAAAAAAAP/wFAUAAAAGf+/+BSZcAP4AEzngAAEAAAAAVVGUxg==</scte35:Binary>
+        </scte35:Signal>
+      </Event>
+      <Event id="1073741830" presentationTime="87660000">
+        <scte35:Signal>
+          <scte35:Binary>/DAgAAAAAAAAAP/wDwUAAAAGf0/+BTmV4AABAAAAANwoRhY=</scte35:Binary>
+        </scte35:Signal>
+      </Event>
+      <Event id="7" presentationTime="88200000" duration="900000">
+        <scte35:Signal>
+          <scte35:Binary>/DAlAAAAAAAAAP/wFAUAAAAHf+/+BUHTQP4ADbugAAEAAAAAmastOA==</scte35:Binary>
+        </scte35:Signal>
+      </Event>
+      <Event id="1073741831" presentationTime="89100000">
+        <scte35:Signal>
+          <scte35:Binary>/DAgAAAAAAAAAP/wDwUAAAAHf0/+BU+O4AABAAAAAGIzElU=</scte35:Binary>
+        </scte35:Signal>
+      </Event>
+      <Event id="8" presentationTime="90360000" duration="540000">
+        <scte35:Signal>
+          <scte35:Binary>/DAlAAAAAAAAAP/wFAUAAAAIf+/+BWLIwP4ACD1gAAEAAAAA43FiIQ==</scte35:Binary>
+        </scte35:Signal>
+      </Event>
+    </EventStream>
+    <AdaptationSet contentType="video" mimeType="video/mp4" segmentAlignment="true" startWithSAP="1" maxWidth="1280" maxHeight="720" frameRate="25">
+      <InbandEventStream schemeIdUri="urn:scte:scte35:2013:bin" value=""></InbandEventStream>
+      <SegmentTemplate timescale="90000" media="$RepresentationID$/t/$Time$.m4s" initialization="$RepresentationID$/init.mp4">
+        <SegmentTimeline>
+          <S t="87300000" d="180000" r="14"></S>
+        </SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="720p" codecs="avc1.64001F" width="1280" height="720" bandwidth="3000000"></Representation>
+      <Representation id="360p" codecs="avc1.64001E" width="640" height="360" bandwidth="800000"></Representation>
+    </AdaptationSet>
+    <AdaptationSet contentType="audio" mimeType="audio/mp4" lang="en" segmentAlignment="true">
+      <AudioChannelConfiguration schemeIdUri="urn:mpeg:mpegB:cicp:ChannelConfiguration" value="2"></AudioChannelConfiguration>
+      <Label>English</Label>
+      <Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"></Role>
+      <SegmentTemplate timescale="48000" media="$RepresentationID$/t/$Time$.m4s" initialization="$RepresentationID$/init.mp4">
+        <SegmentTimeline>
+          <S t="46560256" d="96256" r="1"></S>
+          <S d="95232"></S>
+          <S d="96256" r="2"></S>
+          <S d="95232"></S>
+          <S d="96256" r="2"></S>
+          <S d="95232"></S>
+          <S d="96256" r="2"></S>
+          <S d="95232"></S>
+        </SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="en" codecs="mp4a.40.2" audioSamplingRate="48000" bandwidth="128000"></Representation>
+    </AdaptationSet>
+    <AdaptationSet contentType="audio" mimeType="audio/mp4" lang="en" segmentAlignment="true">
+      <AudioChannelConfiguration schemeIdUri="tag:dolby.com,2014:dash:audio_channel_configuration:2011" value="F801"></AudioChannelConfiguration>
+      <Label>English 5.1</Label>
+      <Role schemeIdUri="urn:mpeg:dash:role:2011" value="alternate"></Role>
+      <SegmentTemplate timescale="48000" media="$RepresentationID$/t/$Time$.m4s" initialization="$RepresentationID$/init.mp4">
+        <SegmentTimeline>
+          <S t="46560768" d="95232"></S>
+          <S d="96768"></S>
+          <S d="95232"></S>
+          <S d="96768"></S>
+          <S d="95232"></S>
+          <S d="96768"></S>
+          <S d="95232"></S>
+          <S d="96768"></S>
+          <S d="95232"></S>
+          <S d="96768"></S>
+          <S d="95232"></S>
+          <S d="96768"></S>
+          <S d="95232"></S>
+          <S d="96768"></S>
+          <S d="95232"></S>
+        </SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="en-51" codecs="ac-3" audioSamplingRate="48000" bandwidth="384000"></Representation>
+    </AdaptationSet>
+  </Period>
+  <UTCTiming schemeIdUri="urn:mpeg:dash:utc:http-iso:2014" value="//origin.test/api/time"></UTCTiming>
+</MPD>
