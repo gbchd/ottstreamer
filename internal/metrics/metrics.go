@@ -26,6 +26,7 @@ type Metrics struct {
 	ffmpegFailures *prometheus.CounterVec
 	adBreaks       *prometheus.CounterVec
 	scte35Signals  *prometheus.CounterVec
+	faults         *prometheus.CounterVec
 }
 
 // New returns Metrics on their own registry, with the Go and process
@@ -63,6 +64,9 @@ func New() *Metrics {
 		scte35Signals: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "scte35_signals_total", Help: "SCTE-35 signals the live edge crossed, by type (announced, cue_out, cue_in, cancel).",
 		}, []string{"stream", "source", "type"}),
+		faults: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "faults_injected_total", Help: "Faults injected into responses, by rule and action.",
+		}, []string{"stream", "rule", "action"}),
 	}
 }
 
@@ -114,11 +118,17 @@ func (m *Metrics) SCTE35Signal(streamID, source, typ string) {
 	m.scte35Signals.WithLabelValues(streamID, source, typ).Inc()
 }
 
+// FaultInjected records one action of a fault rule hitting a request. Rule
+// IDs are bounded: at most 16 per stream, plus url-<kind> for URL faults.
+func (m *Metrics) FaultInjected(streamID, rule, action string) {
+	m.faults.WithLabelValues(streamID, rule, action).Inc()
+}
+
 // DropStream deletes every series of a deleted stream.
 func (m *Metrics) DropStream(streamID string) {
 	only := prometheus.Labels{"stream": streamID}
 	for _, v := range []interface{ DeletePartialMatch(prometheus.Labels) int }{
-		m.segmentsBuilt, m.segmentBuild, m.segmentsLate, m.ffmpegRunning, m.ffmpegFailures, m.adBreaks, m.scte35Signals,
+		m.segmentsBuilt, m.segmentBuild, m.segmentsLate, m.ffmpegRunning, m.ffmpegFailures, m.adBreaks, m.scte35Signals, m.faults,
 	} {
 		v.DeletePartialMatch(only)
 	}

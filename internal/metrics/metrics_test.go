@@ -27,7 +27,9 @@ func TestMetrics(t *testing.T) {
 	m.FFmpegExited("demo", "timeout")
 	m.AdBreak("demo", "manual", "started")
 	m.SCTE35Signal("demo", "recurring", "cue_out")
+	m.FaultInjected("demo", "slow-720p", "delayMs")
 	m.SegmentLate("gone")
+	m.FaultInjected("gone", "url-segment", "status")
 	m.AdBreak("gone", "manual", "started")
 	m.DropStream("gone")
 
@@ -46,6 +48,7 @@ func TestMetrics(t *testing.T) {
 		`streams{state="running"} 2`, `streams{state="stopped"} 0`,
 		`ad_breaks_total{source="manual",stream="demo",type="started"} 1`,
 		`scte35_signals_total{source="recurring",stream="demo",type="cue_out"} 1`,
+		`faults_injected_total{action="delayMs",rule="slow-720p",stream="demo"} 1`,
 		`go_goroutines `,
 	} {
 		if !strings.Contains(string(body), want) {
