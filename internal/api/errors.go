@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"ottstreamer/internal/adbreak"
 	"ottstreamer/internal/stream"
 )
 
@@ -31,11 +32,12 @@ func (s *server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 
 func statusOf(err error) int {
 	switch {
-	case errors.Is(err, stream.ErrNotFound):
+	case errors.Is(err, stream.ErrNotFound), errors.Is(err, adbreak.ErrNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, stream.ErrExists), errors.Is(err, stream.ErrConflict):
+	case errors.Is(err, stream.ErrExists), errors.Is(err, stream.ErrConflict),
+		errors.Is(err, adbreak.ErrNotRunning), errors.Is(err, adbreak.ErrConflict): // ErrConflict covers *OverlapError
 		return http.StatusConflict
-	case errors.Is(err, stream.ErrInvalid):
+	case errors.Is(err, stream.ErrInvalid), errors.Is(err, adbreak.ErrInvalid):
 		return http.StatusUnprocessableEntity
 	case errors.Is(err, stream.ErrVersionMismatch):
 		return http.StatusPreconditionFailed

@@ -4,10 +4,17 @@ go 1.27.4
 
 tool github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen
 
-require github.com/oapi-codegen/runtime v1.9.0
+require (
+	github.com/Comcast/scte35-go v1.8.0
+	github.com/Eyevinn/mp4ff v0.62.1
+	github.com/oapi-codegen/runtime v1.9.0
+	golang.org/x/image v0.48.0
+	golang.org/x/sync v0.25.0
+)
 
 require (
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
+	github.com/bamiaux/iobit v0.0.0-20170418073505-498159a04883 // indirect
 	github.com/dprotaso/go-yit v0.0.0-20220510233725-9ba8df137936 // indirect
 	github.com/getkin/kin-openapi v0.142.0 // indirect
 	github.com/go-openapi/jsonpointer v0.23.1 // indirect
@@ -21,9 +28,8 @@ require (
 	github.com/speakeasy-api/openapi v1.24.0 // indirect
 	github.com/vmware-labs/yaml-jsonpath v0.3.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/mod v0.38.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
-	golang.org/x/tools v0.48.0 // indirect
+	golang.org/x/mod v0.42.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
+	golang.org/x/tools v0.52.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

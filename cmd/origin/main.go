@@ -15,6 +15,9 @@ import (
 	"syscall"
 	"time"
 
+	"ottstreamer/internal/adbreak"
+	"ottstreamer/internal/adbreak/adbreakmem"
+	"ottstreamer/internal/adbreak/adbreakscte35"
 	"ottstreamer/internal/api"
 	"ottstreamer/internal/apikey"
 	"ottstreamer/internal/config"
@@ -51,14 +54,15 @@ func run(logger *slog.Logger) error {
 	}
 
 	repo := streammem.NewRepository()
-	streams := stream.NewService(repo, repo, noRuntimes{}, noBreaks{}, time.Now)
+	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), time.Now)
+	streams := stream.NewService(repo, repo, noRuntimes{}, breaks, time.Now)
 	if err := streams.Resume(ctx); err != nil {
 		return fmt.Errorf("resume streams: %w", err)
 	}
 	go expireEnded(ctx, streams, logger)
 
 	apiMux := http.NewServeMux()
-	api.Register(apiMux, streams, noBreaks{}, time.Now, logger)
+	api.Register(apiMux, streams, breaks, time.Now, logger)
 	mux := http.NewServeMux()
 	mux.Handle("/api/", auth(apiMux))
 	mux.Handle("/api/time", apiMux) // open, more specific than /api/
@@ -122,15 +126,10 @@ func recovered(ctx context.Context, logger *slog.Logger, w http.ResponseWriter, 
 	http.Error(w, "internal error", http.StatusInternalServerError)
 }
 
-// ponytail: placeholders until the live and adbreak services exist (Phase C
-// wires *live.Manager and *adbreak.Service here).
+// ponytail: placeholder until the live service exists (Phase C wires
+// *live.Manager here).
 type noRuntimes struct{}
 
 func (noRuntimes) Launch(context.Context, stream.Stream) error { return nil }
 func (noRuntimes) End(string, int64)                           {}
 func (noRuntimes) Drop(string)                                 {}
-
-type noBreaks struct{}
-
-func (noBreaks) Trim(context.Context, string, int, int64) error { return nil }
-func (noBreaks) DeleteAll(context.Context, string) error        { return nil }

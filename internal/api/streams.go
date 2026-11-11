@@ -83,6 +83,16 @@ func (s *server) GetStreamStatus(ctx context.Context, req GetStreamStatusRequest
 		tl := e.Timeline()
 		edge, horizon := tl.LiveEdge(now), tl.FrozenHorizon(now)
 		pos.Epoch, pos.LiveEdge, pos.FrozenHorizon, pos.EndSegment = &e.Number, &edge, &horizon, e.EndSegment
+		breaks, err := s.breaks.List(ctx, req.Id)
+		if err != nil {
+			return nil, err
+		}
+		for _, b := range breaks {
+			if b.Covers(edge) {
+				active := fromBreak(b)
+				pos.ActiveBreak = &active
+			}
+		}
 	}
 	return pos, nil
 }

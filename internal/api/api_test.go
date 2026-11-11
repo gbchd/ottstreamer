@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"ottstreamer/internal/adbreak"
+	"ottstreamer/internal/adbreak/adbreakmem"
+	"ottstreamer/internal/adbreak/adbreakscte35"
 	"ottstreamer/internal/api"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/stream/streammem"
@@ -23,11 +26,6 @@ type nopRuntimes struct{}
 func (nopRuntimes) Launch(context.Context, stream.Stream) error { return nil }
 func (nopRuntimes) End(string, int64)                           {}
 func (nopRuntimes) Drop(string)                                 {}
-
-type nopBreaks struct{}
-
-func (nopBreaks) Trim(context.Context, string, int, int64) error { return nil }
-func (nopBreaks) DeleteAll(context.Context, string) error        { return nil }
 
 const demoSpec = `{
   "formats": ["hls", "dash"],
@@ -44,9 +42,10 @@ func newServer(t *testing.T) (*httptest.Server, *time.Time) {
 	now := t0
 	repo := streammem.NewRepository()
 	clock := func() time.Time { return now }
-	svc := stream.NewService(repo, repo, nopRuntimes{}, nopBreaks{}, clock)
+	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), clock)
+	svc := stream.NewService(repo, repo, nopRuntimes{}, breaks, clock)
 	mux := http.NewServeMux()
-	api.Register(mux, svc, nopBreaks{}, clock, slog.New(slog.DiscardHandler))
+	api.Register(mux, svc, breaks, clock, slog.New(slog.DiscardHandler))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv, &now
@@ -234,10 +233,4 @@ func TestGetTime(t *testing.T) {
 	if r.raw != "2026-11-06T18:40:00.123Z" || !strings.HasPrefix(r.header.Get("Content-Type"), "text/plain") {
 		t.Errorf("time = %q, %q", r.raw, r.header.Get("Content-Type"))
 	}
-}
-
-func TestBreaksNotImplemented(t *testing.T) {
-	srv, _ := newServer(t)
-	expect(t, do(t, srv, http.MethodPost, "/api/streams/demo/breaks", `{"duration": 30}`), http.StatusNotImplemented)
-	expect(t, do(t, srv, http.MethodGet, "/api/streams/demo/breaks/1", ""), http.StatusNotImplemented)
 }
