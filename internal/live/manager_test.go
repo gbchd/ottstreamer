@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"ottstreamer/internal/adbreak"
+	"ottstreamer/internal/event"
+	"ottstreamer/internal/event/eventtest"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/stream/streamtest"
 )
@@ -146,6 +148,19 @@ func (s *fakeSchedule) Signals(context.Context, string, int, int64) ([]adbreak.S
 	return s.signals, nil
 }
 
+// Crossed reports a break.started at every segment that starts a break.
+func (s *fakeSchedule) Crossed(_ context.Context, id string, epoch int, n int64) ([]event.Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []event.Event
+	for _, b := range s.breaks {
+		if b.StartSeg == n {
+			out = append(out, event.Event{StreamID: id, Epoch: epoch, Segment: new(n), Type: event.BreakStarted})
+		}
+	}
+	return out, nil
+}
+
 func (s *fakeSchedule) set(breaks ...adbreak.Break) {
 	s.mu.Lock()
 	s.breaks = breaks
@@ -200,15 +215,16 @@ type harness struct {
 	metrics *fakeMetrics
 	clock   *clock
 	logs    *bytes.Buffer
+	events  *eventtest.Recorder
 }
 
 func newHarness(now func() time.Time) *harness {
-	h := &harness{enc: &fakeEncoder{}, w: &fakeWriter{}, sched: &fakeSchedule{}, metrics: &fakeMetrics{}, clock: &clock{t: ast}, logs: &bytes.Buffer{}}
+	h := &harness{enc: &fakeEncoder{}, w: &fakeWriter{}, sched: &fakeSchedule{}, metrics: &fakeMetrics{}, clock: &clock{t: ast}, logs: &bytes.Buffer{}, events: &eventtest.Recorder{}}
 	if now == nil {
 		now = h.clock.now
 	}
 	logger := slog.New(slog.NewTextHandler(h.logs, nil))
-	h.m = NewManager(h.enc, h.w, h.sched, 1<<20, 2, h.metrics, now, logger)
+	h.m = NewManager(h.enc, h.w, h.sched, h.events, 1<<20, 2, h.metrics, now, logger)
 	return h
 }
 
@@ -265,7 +281,7 @@ func TestManager_Lifecycle(t *testing.T) {
 		if got := rt.Timeline().EndSeg; got != 6 {
 			t.Fatalf("EndSeg = %d, want 6", got)
 		}
-		<-rt.done // the producer exits after the end segment
+		<-rt.done // the producer exits once the live edge reaches the end segment
 		calls := h.enc.encoded()
 		if len(calls) != 7 || calls[len(calls)-1].n != 6 {
 			t.Fatalf("encoded %v, want 0..6", calls)

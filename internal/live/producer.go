@@ -4,22 +4,28 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"ottstreamer/internal/event"
 )
 
 // produce encodes every segment of rt as soon as it is frozen, so players
-// never wait for the encoder. Older segments are built on demand.
+// never wait for the encoder, and records the events of each segment as it
+// is published. Older segments are built on demand. It returns once the
+// live edge reaches the end segment.
 func (m *Manager) produce(rt *Runtime) {
 	ctx := rt.ctx
 	defer close(rt.done)
-	next := max(0, rt.Timeline().LiveEdge(m.now())+1)
+	edge := rt.Timeline().LiveEdge(m.now())
+	next, crossed := max(0, edge+1), edge // what was published before launch is history
 	rt.produced.Store(next - 1)
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
+		crossed = m.cross(ctx, rt, crossed)
 		var finished bool
 		next, finished = m.step(ctx, rt, next)
 		rt.produced.Store(next - 1)
-		if finished {
+		if finished && crossed >= rt.Timeline().EndSeg {
 			return
 		}
 		// The frozen horizon moves when the next segment is published.
@@ -31,6 +37,27 @@ func (m *Manager) produce(rt *Runtime) {
 		case <-timer.C:
 		}
 	}
+}
+
+// cross records the events of the segments published after crossed, up to
+// the live edge, and returns the last segment it handled.
+func (m *Manager) cross(ctx context.Context, rt *Runtime, crossed int64) int64 {
+	tl := rt.Timeline()
+	edge := tl.LiveEdge(m.now())
+	if tl.EndSeg >= 0 {
+		edge = min(edge, tl.EndSeg)
+	}
+	for n := crossed + 1; n <= edge && ctx.Err() == nil; n++ {
+		events, err := m.sched.Crossed(ctx, rt.stream.ID, rt.epoch, n)
+		if err != nil {
+			m.logger.ErrorContext(ctx, "segment events", "stream", rt.stream.ID, "epoch", rt.epoch, "segment", n, "error", err)
+			continue
+		}
+		for _, e := range events {
+			m.events.Record(ctx, e)
+		}
+	}
+	return max(crossed, edge)
 }
 
 // step encodes segments next..FrozenHorizon(now) and returns the next
@@ -69,5 +96,6 @@ func (m *Manager) produceOne(ctx context.Context, rt *Runtime, n int64) {
 	if late := m.now().Sub(rt.Timeline().SegEnd(n)); late > 0 {
 		m.metrics.SegmentLate(rt.stream.ID)
 		m.logger.WarnContext(ctx, "segment.late", "stream", rt.stream.ID, "epoch", rt.epoch, "segment", n, "late", late)
+		m.record(rt, event.SegmentLate, n, map[string]any{"lateSeconds": late.Seconds()})
 	}
 }

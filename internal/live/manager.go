@@ -12,6 +12,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"ottstreamer/internal/adbreak"
+	"ottstreamer/internal/event"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/timeline"
 )
@@ -23,6 +24,13 @@ type Schedule interface {
 	InRange(ctx context.Context, streamID string, epoch int, from, to int64) ([]adbreak.Break, error)
 	// Signals returns the in-band SCTE-35 messages of video segment n.
 	Signals(ctx context.Context, streamID string, epoch int, n int64) ([]adbreak.Signal, error)
+	// Crossed returns the break and signal events of publishing segment n.
+	Crossed(ctx context.Context, streamID string, epoch int, n int64) ([]event.Event, error)
+}
+
+// Events records what the runtime sees.
+type Events interface {
+	Record(ctx context.Context, e event.Event)
 }
 
 // Metrics counts the segments the runtime builds.
@@ -38,6 +46,7 @@ type Manager struct {
 	enc          Encoder
 	w            SegmentWriter
 	sched        Schedule
+	events       Events
 	parallelism  int
 	metrics      Metrics
 	now          func() time.Time
@@ -53,11 +62,12 @@ type Manager struct {
 // NewManager returns a Manager whose segment cache holds up to cacheBytes of
 // encoded video and whose producers encode up to parallelism segments of a
 // stream at once.
-func NewManager(enc Encoder, w SegmentWriter, sched Schedule, cacheBytes int64, parallelism int, metrics Metrics, now func() time.Time, logger *slog.Logger) *Manager {
+func NewManager(enc Encoder, w SegmentWriter, sched Schedule, events Events, cacheBytes int64, parallelism int, metrics Metrics, now func() time.Time, logger *slog.Logger) *Manager {
 	return &Manager{
 		enc:         enc,
 		w:           w,
 		sched:       sched,
+		events:      events,
 		parallelism: max(parallelism, 1),
 		metrics:     metrics,
 		now:         now,
@@ -114,6 +124,11 @@ type Runtime struct {
 	done   chan struct{} // closed when the producer exits
 }
 
+// record records an event of the runtime's epoch at segment n.
+func (m *Manager) record(rt *Runtime, t event.Type, n int64, data map[string]any) {
+	m.events.Record(rt.ctx, event.Event{StreamID: rt.stream.ID, Epoch: rt.epoch, Segment: new(n), Type: t, Data: data})
+}
+
 // Stream returns a copy of the stream as it was launched.
 func (rt *Runtime) Stream() stream.Stream {
 	return rt.stream.Clone()
@@ -161,7 +176,7 @@ func (m *Manager) Launch(ctx context.Context, s stream.Stream) error {
 }
 
 // newRuntime builds the tracks of s's current epoch. The runtime outlives
-// ctx: it lives until it is stopped.
+// ctx: it lives until it is stopped, and what it records is the system's.
 func (m *Manager) newRuntime(ctx context.Context, s stream.Stream) (*Runtime, error) {
 	e := s.Status.Epoch
 	if e == nil {
@@ -175,7 +190,7 @@ func (m *Manager) newRuntime(ctx context.Context, s stream.Stream) (*Runtime, er
 	if err := checkTracks(e.Spec, tracks); err != nil {
 		return nil, fmt.Errorf("live: start epoch of %s: %w", s.ID, err)
 	}
-	rctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	rctx, cancel := context.WithCancel(event.WithActor(context.WithoutCancel(ctx), event.System))
 	rt := &Runtime{
 		stream: s,
 		epoch:  e.Number,

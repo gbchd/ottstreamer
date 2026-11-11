@@ -77,7 +77,7 @@ func newE2E(t *testing.T, t0 time.Time) *e2e {
 	var ids ulid.Generator
 	events := event.NewService(eventmem.NewRepository(eventsPerStream), c.now, ids.New, func(event.Event) {}, logger)
 	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), events, c.now)
-	mgr := live.NewManager(enc, livemp4.NewWriter(), breaks, 64<<20, 2, met, c.now, logger)
+	mgr := live.NewManager(enc, livemp4.NewWriter(), breaks, events, 64<<20, 2, met, c.now, logger)
 	t.Cleanup(mgr.Close)
 	streams := stream.NewService(repo, repo, mgr, breaks, events, c.now)
 	met.WatchCache(mgr)

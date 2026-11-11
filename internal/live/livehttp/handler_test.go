@@ -18,6 +18,8 @@ import (
 
 	"ottstreamer/internal/adbreak"
 	"ottstreamer/internal/adbreak/adbreakscte35"
+	"ottstreamer/internal/event"
+	"ottstreamer/internal/event/eventtest"
 	"ottstreamer/internal/live"
 	"ottstreamer/internal/live/livehttp"
 	"ottstreamer/internal/stream"
@@ -100,6 +102,10 @@ func (fakeBreaks) Signals(context.Context, string, int, int64) ([]adbreak.Signal
 	return nil, nil
 }
 
+func (fakeBreaks) Crossed(context.Context, string, int, int64) ([]event.Event, error) {
+	return nil, nil
+}
+
 func spec() stream.Spec {
 	s := streamtest.Spec()
 	s.Audio = append(s.Audio, stream.Audio{ID: "en-51", Lang: "en", Name: "English 5.1", Channels: 6, BitrateKbps: 384, Codec: stream.CodecAC3})
@@ -169,7 +175,7 @@ func newServer(t *testing.T) *httptest.Server {
 	}
 	clock := func() time.Time { return now }
 	logger := slog.New(slog.DiscardHandler)
-	mgr := live.NewManager(fakeEncoder{}, fakeWriter{}, breaks, 1<<20, 1, nopMetrics{}, clock, logger)
+	mgr := live.NewManager(fakeEncoder{}, fakeWriter{}, breaks, &eventtest.Recorder{}, 1<<20, 1, nopMetrics{}, clock, logger)
 	t.Cleanup(mgr.Close)
 	for _, s := range streams {
 		if err := mgr.Launch(t.Context(), s); err != nil {

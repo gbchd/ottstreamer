@@ -91,7 +91,7 @@ func run(logger *slog.Logger) error {
 	var ids ulid.Generator
 	events := event.NewService(eventmem.NewRepository(eventsPerStream), time.Now, ids.New, func(event.Event) {}, logger)
 	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), events, time.Now)
-	mgr := live.NewManager(enc, livemp4.NewWriter(), breaks, cfg.CacheBytes, cfg.ProducerParallelism, met, time.Now, logger)
+	mgr := live.NewManager(enc, livemp4.NewWriter(), breaks, events, cfg.CacheBytes, cfg.ProducerParallelism, met, time.Now, logger)
 	defer mgr.Close() // after the server has drained, before the tmp dir goes
 	streams := stream.NewService(repo, repo, mgr, breaks, events, time.Now)
 	if err := streams.Resume(ctx); err != nil {

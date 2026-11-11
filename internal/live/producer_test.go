@@ -1,11 +1,15 @@
 package live
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"ottstreamer/internal/adbreak"
+	"ottstreamer/internal/event"
 )
 
 func segments(calls []encodeCall) []int64 {
@@ -45,6 +49,34 @@ func TestManager_step(t *testing.T) {
 	if built, late := h.metrics.counts(); built != 6 || late != 2 {
 		t.Fatalf("metrics built %d, late %d; want 6, 2", built, late)
 	}
+	for _, e := range h.events.Events() {
+		if e.Type != event.SegmentLate || e.Actor != event.System || e.Data["lateSeconds"].(float64) <= 0 {
+			t.Errorf("event %+v, want segment.late by the system", e)
+		}
+	}
+}
+
+func TestManager_produce_events(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newHarness(time.Now)
+		h.sched.set(adbreak.Break{StartSeg: 1, EndSeg: 2}, adbreak.Break{StartSeg: 3, EndSeg: 4})
+		ctx := event.WithActor(t.Context(), "api:qa") // the start request's actor
+		if err := h.m.Launch(ctx, running("a", time.Now())); err != nil {
+			t.Fatal(err)
+		}
+		rt, _ := h.m.Runtime("a")
+		h.m.End("a", 2)
+		<-rt.done
+		events := h.events.Events()
+		got := make([]string, 0, len(events))
+		for _, e := range events {
+			got = append(got, fmt.Sprintf("%s %d %s", e.Type, *e.Segment, e.Actor))
+		}
+		// Segment 3 is past the end; segment 1 is recorded once, when published.
+		if want := []string{"break.started 1 system"}; !slices.Equal(got, want) {
+			t.Errorf("events %q, want %q", got, want)
+		}
+	})
 }
 
 func TestManager_produceUpTo_parallelism(t *testing.T) {
@@ -86,6 +118,15 @@ func TestManager_produceOne_failure(t *testing.T) {
 	}
 	if !strings.Contains(h.logs.String(), "segment.encode_failed") {
 		t.Fatalf("no segment.encode_failed in %q", h.logs)
+	}
+	events := h.events.Events()
+	got := make([]string, 0, len(events))
+	for _, e := range events {
+		got = append(got, fmt.Sprintf("%s %d %v", e.Type, *e.Segment, e.Data))
+	}
+	failed := "ffmpeg.failed 3 map[error:ffmpeg exited with status 1]"
+	if want := []string{failed, "segment.retried 3 map[]", failed}; !slices.Equal(got, want) {
+		t.Errorf("events %q, want %q", got, want)
 	}
 	// A later request tries again on demand.
 	if err := h.m.WriteSegment(t.Context(), &strings.Builder{}, "a", "720p", 3); err != nil {

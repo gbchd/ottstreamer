@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"ottstreamer/internal/event"
 	"ottstreamer/internal/timeline"
 )
 
@@ -119,12 +120,17 @@ func (m *Manager) segmentSet(ctx context.Context, rt *Runtime, n int64) (map[str
 }
 
 // encode runs the encoder on the runtime's context, so a request that goes
-// away does not cancel a build other callers share. It retries once.
+// away does not cancel a build other callers share. It retries once, and
+// records each failure and the retry.
 func (m *Manager) encode(rt *Runtime, n int64, inAd bool) (map[string][]Sample, error) {
 	start := m.now()
 	set, err := m.enc.EncodeSegment(rt.ctx, rt.stream, n, inAd)
 	if err != nil && rt.ctx.Err() == nil {
-		set, err = m.enc.EncodeSegment(rt.ctx, rt.stream, n, inAd)
+		m.record(rt, event.FFmpegFailed, n, map[string]any{"error": err.Error()})
+		m.record(rt, event.SegmentRetried, n, nil)
+		if set, err = m.enc.EncodeSegment(rt.ctx, rt.stream, n, inAd); err != nil && rt.ctx.Err() == nil {
+			m.record(rt, event.FFmpegFailed, n, map[string]any{"error": err.Error()})
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: segment %d of %s: %w", ErrUnavailable, n, rt.stream.ID, err)
