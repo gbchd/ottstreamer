@@ -26,11 +26,19 @@ This module uses hexagonal architecture expressed as Go packages. Three terms ca
 - New technology for an existing domain package: a new adapter subpackage that implements an interface declared in the domain package.
 - New business noun with its own rules and storage: a new sibling domain package under `internal/`, with its own adapter subpackages.
 
-## Done when
+## Gate: run before every commit
 
-- `go build ./...` and `go test ./...` pass, including `internal/arch_test.go`.
-- `golangci-lint run` passes (depguard enforces rule 1).
-- Every new behavior in a domain package has a test that runs without a database.
+Run the full gate from the repo root before each `git commit`, and commit only when every step is green:
+
+```sh
+test -z "$(gofmt -l .)"    # formatting
+go vet ./...
+go build ./...
+golangci-lint run ./...    # depguard enforces rule 1
+go test -race ./...        # includes internal/arch_test.go
+```
+
+A red step means fix the cause, then rerun the whole gate. Every new behavior in a domain package has a test that runs without a database.
 
 ## Reference
 
