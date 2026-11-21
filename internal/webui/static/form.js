@@ -343,6 +343,15 @@ function Fields(props) {
     <${Rows} ...${props} name="subtitles" title="Subtitles" columns=${SUBTITLES}
       blank=${(rows) => ({ id: nextId(rows, 'sub'), lang: 'en', format: 'webvtt' })} />
     <section class="fields">
+      <h2>CEA-608 captions</h2>
+      <label>Channel <select value=${spec.captions?.cea608?.channel ?? (spec.captions?.cea608 ? 'CC1' : '')} onChange=${(e) => set(['spec', 'captions'],
+        e.target.value ? { cea608: { lang: 'en', ...spec.captions?.cea608, channel: e.target.value } } : undefined)}>
+        <option value="">none</option>${['CC1', 'CC2', 'CC3', 'CC4'].map((c) => html`<option>${c}</option>`)}
+      </select><${Err} fieldErrors=${props.fieldErrors} p=${['spec', 'captions', 'cea608', 'channel']} /></label>
+      ${spec.captions?.cea608 && html`<${Text} ...${props} p=${['spec', 'captions', 'cea608', 'lang']} label="Lang" placeholder="en" />`}
+      <span class="muted">The subtitle text, inside the video as pop-on captions.</span>
+    </section>
+    <section class="fields">
       <h2>Ads</h2>
       <${Num} ...${props} p=${['spec', 'ads', 'leadSeconds']} label="Lead (s)" placeholder="8" />
       <${Select} ...${props} p=${['spec', 'ads', 'command']} label="Command" options=${['splice_insert', 'time_signal']} def="splice_insert" />

@@ -167,6 +167,22 @@ export function Player({ urls, formats }) {
       ctl.current = null;
     };
   }, [format, url, reload]);
+  // CEA-608 captions: both players expose them as native captions tracks.
+  useEffect(() => {
+    const tracks = video.current.textTracks;
+    const f = () => setTick((t) => t + 1);
+    tracks.addEventListener('addtrack', f);
+    return () => tracks.removeEventListener('addtrack', f);
+  }, []);
+  const ccTracks = video.current ? [...video.current.textTracks].filter((t) => t.kind === 'captions') : [];
+  const cc = {
+    list: ccTracks.map((t) => `${t.label} (${t.language})`),
+    current: ccTracks.findIndex((t) => t.mode === 'showing'),
+  };
+  const setCC = (i) => {
+    ccTracks.forEach((t, j) => { t.mode = j === i ? 'showing' : 'hidden'; });
+    setLog((l) => [{ at: Date.now(), msg: `608 captions ${i < 0 ? 'off' : ccTracks[i].label}` }, ...l].slice(0, 200));
+  };
   const c = ctl.current;
   return html`<div class="player">
     <div class="video-box">
@@ -180,6 +196,7 @@ export function Player({ urls, formats }) {
       <${Picker} label="Rendition" state=${c?.levels()} set=${(i) => c.setLevel(i)} none="auto" />
       <${Picker} label="Audio" state=${c?.audio()} set=${(i) => c.setAudio(i)} />
       <${Picker} label="Subtitles" state=${c?.text()} set=${(i) => c.setText(i)} none="off" />
+      <${Picker} label="608 captions" state=${cc} set=${setCC} none="off" />
       <button onClick=${() => setReload((r) => r + 1)}>Reload</button>
     </div>
     ${error && html`<div class="error">${error.message}</div>`}
