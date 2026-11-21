@@ -96,6 +96,12 @@ func (m *Manager) fragment(ctx context.Context, rt *Runtime, t Track, n int64) (
 	f.Samples = samples
 	f.Emsgs = signals
 	f.PadTo = padBytes(rt, t.ID, tl)
+	if c := rt.stream.Status.Epoch.Spec.CEA608; c != nil {
+		f.CCChannel = c.Channel
+		if f.Captions, err = m.captions(ctx, rt, c.Channel, n); err != nil {
+			return Fragment{}, err
+		}
+	}
 	return f, nil
 }
 
@@ -203,18 +209,63 @@ func (m *Manager) cues(ctx context.Context, rt *Runtime, t Track, n int64) ([]Cu
 	first, last := start/second, (end-1)/second
 	cues := make([]Cue, 0, last-first+1)
 	for s := first; s <= last; s++ {
-		beep := "Bip!"
-		if s%2 == 1 {
-			beep = "Bop!"
-		}
-		clock := tl.AST.Add(time.Duration(s) * time.Second).In(zone).Format("15:04:05")
-		text := fmt.Sprintf("%s · SUB · %s · frame %d · %s", lang, clock, s*int64(tl.FPS), beep)
-		if br != nil {
-			from := tl.VideoTfdt(br.StartSeg) / second
-			total := (tl.VideoTfdt(br.PlannedEndSeg)+second-1)/second - from
-			text = fmt.Sprintf("[AD %d/%d] %s", s-from+1, total, text)
-		}
+		text := fmt.Sprintf("%s%s · SUB · %s · frame %d · %s", adPrefix(tl, br, s), lang, clockAt(tl, zone, s), s*int64(tl.FPS), beep(s))
 		cues = append(cues, Cue{Start: max(s*second, start), End: min((s+1)*second, end), Text: text})
 	}
 	return cues, nil
+}
+
+// captions returns the CEA-608 captions the frames of video segment n show
+// or load: a caption is loaded during the second before it shows, so they
+// run from the second after the segment's first frame to the one after its
+// last. Caption s reads "[AD k/D] CC1 - 18:30:05" over "frame 1250 - Bip!",
+// with the break and the zone offset of the segment holding its first frame,
+// as cues and the picture have them.
+//
+// Loading reaches into the next segments (at most two, since segments last
+// at least 0.5 s), but no further than the frozen horizon, which is at least
+// two segments past any published segment: the breaks a caption depends on
+// are settled whenever a segment carrying it is served, so its bytes never
+// change.
+func (m *Manager) captions(ctx context.Context, rt *Runtime, channel string, n int64) ([]Caption, error) {
+	tl := rt.Timeline()
+	fps := int64(tl.FPS)
+	first, last := tl.FirstFrame(n)/fps+1, (tl.FirstFrame(n+1)-1)/fps+1
+	out := make([]Caption, 0, last-first+1)
+	for s := first; s <= last; s++ {
+		seg := s * fps / tl.SegFrames
+		br, err := m.breakAt(ctx, rt, seg)
+		if err != nil {
+			return nil, err
+		}
+		_, off := tl.SegStart(seg).In(rt.loc).Zone()
+		row1 := fmt.Sprintf("%s%s - %s", adPrefix(tl, br, s), channel, clockAt(tl, time.FixedZone("", off), s))
+		out = append(out, Caption{Second: s, Rows: [2]string{row1, fmt.Sprintf("frame %d - %s", s*fps, beep(s))}})
+	}
+	return out, nil
+}
+
+// adPrefix is "[AD k/D] " for clock second s inside br: second k of the D
+// clock seconds the planned break touches; "" outside a break.
+func adPrefix(tl timeline.Timeline, br *adbreak.Break, s int64) string {
+	if br == nil {
+		return ""
+	}
+	const second = timeline.VideoTimescale
+	from := tl.VideoTfdt(br.StartSeg) / second
+	total := (tl.VideoTfdt(br.PlannedEndSeg)+second-1)/second - from
+	return fmt.Sprintf("[AD %d/%d] ", s-from+1, total)
+}
+
+// clockAt is the burnt-in clock of second s, hh:mm:ss in zone.
+func clockAt(tl timeline.Timeline, zone *time.Location, s int64) string {
+	return tl.AST.Add(time.Duration(s) * time.Second).In(zone).Format("15:04:05")
+}
+
+// beep is what second s sounds: Bip! on even seconds, Bop! on odd ones.
+func beep(s int64) string {
+	if s%2 == 1 {
+		return "Bop!"
+	}
+	return "Bip!"
 }

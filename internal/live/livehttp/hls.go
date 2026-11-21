@@ -265,6 +265,13 @@ func (*Handler) multivariant(_ *http.Request, req request) ([]byte, error) {
 		fmt.Fprintf(&b, "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",LANGUAGE=\"%s\",NAME=\"%s\",DEFAULT=%s,AUTOSELECT=YES,FORCED=NO,URI=\"%s\"\n",
 			s.Lang, cmp.Or(s.Name, s.ID), yesNo(s.Default), req.url(s.ID+".m3u8"))
 	}
+	// CEA-608 captions ride in every variant's video.
+	var cc string
+	if c := req.spec.CEA608; c != nil {
+		cc = `,CLOSED-CAPTIONS="cc"`
+		fmt.Fprintf(&b, "#EXT-X-MEDIA:TYPE=CLOSED-CAPTIONS,GROUP-ID=\"cc\",LANGUAGE=\"%s\",NAME=\"%s\",DEFAULT=NO,AUTOSELECT=YES,INSTREAM-ID=\"%s\"\n",
+			c.Lang, c.Channel, c.Channel)
+	}
 	variants := make([]variant, 0, len(req.spec.Video)*len(groups))
 	for _, v := range req.spec.Video {
 		t, _ := req.rt.Track(v.ID)
@@ -290,8 +297,8 @@ func (*Handler) multivariant(_ *http.Request, req request) ([]byte, error) {
 		return cmp.Or(cmp.Compare(rank(x), rank(y)), cmp.Compare(y.bandwidth, x.bandwidth))
 	})
 	for _, v := range variants {
-		fmt.Fprintf(&b, "#EXT-X-STREAM-INF:BANDWIDTH=%d,AVERAGE-BANDWIDTH=%d,CODECS=\"%s\",RESOLUTION=%dx%d,FRAME-RATE=%.3f,AUDIO=\"%s\"%s\n%s\n",
-			v.bandwidth*11/10, v.bandwidth, v.codecs, v.video.Width, v.video.Height, float64(req.spec.FPS), v.group, subs, req.url(v.video.ID+".m3u8"))
+		fmt.Fprintf(&b, "#EXT-X-STREAM-INF:BANDWIDTH=%d,AVERAGE-BANDWIDTH=%d,CODECS=\"%s\",RESOLUTION=%dx%d,FRAME-RATE=%.3f,AUDIO=\"%s\"%s%s\n%s\n",
+			v.bandwidth*11/10, v.bandwidth, v.codecs, v.video.Width, v.video.Height, float64(req.spec.FPS), v.group, subs, cc, req.url(v.video.ID+".m3u8"))
 	}
 	return []byte(b.String()), nil
 }

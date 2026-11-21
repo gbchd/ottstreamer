@@ -30,6 +30,7 @@
     </EventStream>
     <AdaptationSet id="1" contentType="video" mimeType="video/mp4" segmentAlignment="true" startWithSAP="1" maxWidth="1280" maxHeight="720" frameRate="25">
       <InbandEventStream schemeIdUri="urn:scte:scte35:2013:bin" value=""></InbandEventStream>
+      <Accessibility schemeIdUri="urn:scte:dash:cc:cea-608:2015" value="CC1=eng"></Accessibility>
       <SegmentTemplate timescale="90000" duration="180000" startNumber="0" media="$RepresentationID$/$Number$.m4s?addressing=number" initialization="$RepresentationID$/init.mp4?addressing=number"></SegmentTemplate>
       <Representation id="720p" codecs="avc1.64001F" width="1280" height="720" bandwidth="3000000"></Representation>
       <Representation id="360p" codecs="avc1.64001E" width="640" height="360" bandwidth="800000"></Representation>

@@ -148,6 +148,39 @@ func (e *e2e) file(rendition string, n int64) string {
 	return path
 }
 
+// checkCaptions decodes the CEA-608 captions of segments 9 to 11 of every
+// video rendition with ffmpeg: captions 10 and 11, loaded in 9 and 10, show
+// on the first frame of their second, with the break's position.
+func (e *e2e) checkCaptions() {
+	e.t.Helper()
+	want := []string{
+		"00:00:01,000 --> 00:00:02,000\n[AD 1/3] CC1 - 18:00:10\nframe 250 - Bip!\n",
+		"00:00:02,000 --> 00:00:03,000\n[AD 2/3] CC1 - 18:00:11\nframe 275 - Bop!\n",
+	}
+	for _, r := range []string{"180p", "144p-hevc", "144p-av1"} {
+		b := e.live(r + "/init.mp4")
+		for n := range []int{9, 10, 11} {
+			b = append(b, e.live(r+"/"+strconv.Itoa(9+n)+".m4s")...)
+		}
+		path := filepath.Join(e.t.TempDir(), r+".mp4")
+		if err := os.WriteFile(path, b, 0o600); err != nil {
+			e.t.Fatal(err)
+		}
+		out, err := exec.CommandContext(e.t.Context(), "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "movie="+path+"[out+subcc]",
+			"-map", "0:1", "-f", "srt", "-").Output()
+		if err != nil {
+			e.t.Fatalf("decode captions of %s: %v", r, err)
+		}
+		// ffmpeg marks the second row's deeper indent with hard spaces.
+		srt := strings.NewReplacer(`<font face="Monospace">{\an7}`, "", "</font>", "", `\h`, "").Replace(string(out))
+		for _, w := range want {
+			if !strings.Contains(srt, w) {
+				e.t.Errorf("%s captions:\n%s\nlack\n%s", r, srt, w)
+			}
+		}
+	}
+}
+
 // probe decodes every frame of the file and returns "<codec> <frames>".
 func probe(t *testing.T, path string) string {
 	t.Helper()
@@ -194,6 +227,7 @@ const e2eStream = `{"id": "e2e", "name": "End to end", "spec": {
     {"id": "sub-en", "lang": "en", "name": "English", "format": "webvtt", "default": true},
     {"id": "sub-fr", "lang": "fr", "name": "Français", "format": "imsc1"}
   ],
+  "captions": {"cea608": {"lang": "en"}},
   "ads": {"leadSeconds": 2, "hls": ["daterange", "cueout"], "dash": ["eventstream-bin", "inband"]},
   "window": {"dvrSeconds": 10, "retainSeconds": 60}
 }}`
@@ -221,7 +255,8 @@ func TestEndToEnd(t *testing.T) {
 	master := string(e.live("master.m3u8"))
 	av1, hevc, avc := strings.Index(master, `CODECS="av01.`), strings.Index(master, `CODECS="hvc1.`), strings.Index(master, `CODECS="avc1.`)
 	if av1 < 0 || hevc < av1 || avc < hevc || !strings.Contains(master, `,mp4a.40.2,ac-3,stpp.ttml.im1t",`) ||
-		!strings.Contains(master, `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",LANGUAGE="fr"`) || strings.Count(master, `SUBTITLES="subs"`) != 4 {
+		!strings.Contains(master, `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",LANGUAGE="fr"`) || strings.Count(master, `SUBTITLES="subs"`) != 4 ||
+		!strings.Contains(master, `#EXT-X-MEDIA:TYPE=CLOSED-CAPTIONS,GROUP-ID="cc",LANGUAGE="en",NAME="CC1"`) || strings.Count(master, `CLOSED-CAPTIONS="cc"`) != 4 {
 		t.Errorf("master:\n%s", master)
 	}
 	var cues string
@@ -248,7 +283,8 @@ func TestEndToEnd(t *testing.T) {
 	mpd := string(e.live("manifest.mpd"))
 	for _, want := range []string{`<InbandEventStream schemeIdUri="urn:scte:scte35:2013:bin"`, `<Event id="1" presentationTime="900000" duration="270000">`, `/api/time?stream=e2e"`,
 		`<SupplementalProperty schemeIdUri="urn:mpeg:dash:adaptation-set-switching:2016" value="2,3">`,
-		`<Representation id="sub-en" codecs="wvtt"`, `<Representation id="sub-fr" codecs="stpp.ttml.im1t"`} {
+		`<Representation id="sub-en" codecs="wvtt"`, `<Representation id="sub-fr" codecs="stpp.ttml.im1t"`,
+		`<Accessibility schemeIdUri="urn:scte:dash:cc:cea-608:2015" value="CC1=eng">`} {
 		if !strings.Contains(mpd, want) {
 			t.Errorf("MPD lacks %s:\n%s", want, mpd)
 		}
@@ -297,6 +333,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	e.checkSubtitles()
+	e.checkCaptions()
 	e.checkFaults()
 
 	// Stop: the end segment is the frozen horizon, 17.

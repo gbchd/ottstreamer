@@ -129,6 +129,7 @@ func spec() stream.Spec {
 		{ID: "sub-en", Lang: "en", Name: "English", Format: stream.SubtitleWebVTT, Default: true},
 		{ID: "sub-fr", Lang: "fr", Name: "Français", Format: stream.SubtitleIMSC1},
 	}
+	s.CEA608 = &stream.CEA608{Lang: "en"}
 	s.Normalize()
 	return s
 }

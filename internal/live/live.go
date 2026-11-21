@@ -69,6 +69,14 @@ func Timestamp(ticks int64) string {
 	return fmt.Sprintf("%02d:%02d:%02d.%03d", ms/3600000, ms/60000%60, ms/1000%60, ms%1000)
 }
 
+// Caption is the CEA-608 pop-on caption shown from the first frame of clock
+// second Second: up to two rows of at most 32 characters of the basic 608
+// set, which the writer centres below the burnt-in clock.
+type Caption struct {
+	Second int64
+	Rows   [2]string
+}
+
 // Fragment is everything needed to write one CMAF media segment.
 type Fragment struct {
 	Seq       uint32 // n + 1
@@ -81,6 +89,8 @@ type Fragment struct {
 	PadTo     int              // video: total mdat payload bytes to reach with codec filler; 0 = none
 	Cues      []Cue            // text: back to back over the segment, in place of Samples
 	Lang      string           // text: the track's language
+	CCChannel string           // video: CEA-608 channel of Captions, CC1 to CC4; "" for none
+	Captions  []Caption        // video: every caption the frames of this segment show or load
 }
 
 // SegmentWriter writes CMAF media segments, and the headers of the text

@@ -68,6 +68,9 @@ func (*Writer) WriteSegment(w io.Writer, f live.Fragment) error {
 	tfdt.Version = 1
 
 	entry, _, _ := strings.Cut(f.Codec, ".")
+	if f.CCChannel != "" {
+		f.Samples = withCaptions(f, entry)
+	}
 	sizes := make([]int, len(f.Samples)) // unknown codec: no padding
 	filler, ok := fillers[entry]
 	if ok {

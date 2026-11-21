@@ -30,6 +30,7 @@
     </EventStream>
     <AdaptationSet id="1" contentType="video" mimeType="video/mp4" segmentAlignment="true" startWithSAP="1" maxWidth="1280" maxHeight="720" frameRate="25">
       <InbandEventStream schemeIdUri="urn:scte:scte35:2013:bin" value=""></InbandEventStream>
+      <Accessibility schemeIdUri="urn:scte:dash:cc:cea-608:2015" value="CC1=eng"></Accessibility>
       <SegmentTemplate timescale="90000" media="$RepresentationID$/t/$Time$.m4s" initialization="$RepresentationID$/init.mp4">
         <SegmentTimeline>
           <S t="87300000" d="180000" r="14"></S>

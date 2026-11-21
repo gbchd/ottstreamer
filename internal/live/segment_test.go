@@ -311,6 +311,46 @@ func TestManager_WriteSegment_text(t *testing.T) {
 	}
 }
 
+func TestManager_WriteSegment_captions(t *testing.T) {
+	tests := []struct {
+		name   string
+		seg    time.Duration
+		breaks []adbreak.Break
+		n      int64
+		want   []Caption
+	}{
+		{"loads the next second", 2 * time.Second, nil, 3, []Caption{
+			{7, [2]string{"CC3 - 18:00:07", "frame 175 - Bop!"}},
+			{8, [2]string{"CC3 - 18:00:08", "frame 200 - Bip!"}},
+		}},
+		{"break of the next segment", 2 * time.Second, []adbreak.Break{{ID: "1", StartSeg: 4, EndSeg: 6, PlannedEndSeg: 6}}, 3, []Caption{
+			{7, [2]string{"CC3 - 18:00:07", "frame 175 - Bop!"}},
+			{8, [2]string{"[AD 1/4] CC3 - 18:00:08", "frame 200 - Bip!"}},
+		}},
+		{"1.92 s segment across three seconds", 1920 * time.Millisecond, nil, 1, []Caption{
+			{2, [2]string{"CC3 - 18:00:02", "frame 50 - Bip!"}},
+			{3, [2]string{"CC3 - 18:00:03", "frame 75 - Bop!"}},
+			{4, [2]string{"CC3 - 18:00:04", "frame 100 - Bip!"}},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(nil)
+			s := subtitled("a", tt.seg, "UTC")
+			s.Spec.CEA608 = &stream.CEA608{Channel: "CC3", Lang: "en"}
+			s.Status.Epoch.Spec = s.Spec.Clone()
+			h.add(t, s)
+			h.sched.set(tt.breaks...)
+			if err := h.m.WriteSegment(t.Context(), &strings.Builder{}, "a", "720p", tt.n); err != nil {
+				t.Fatal(err)
+			}
+			if f := h.w.last(); f.CCChannel != "CC3" || !slices.Equal(f.Captions, tt.want) {
+				t.Errorf("channel %q, captions =\n%v\nwant\n%v", f.CCChannel, f.Captions, tt.want)
+			}
+		})
+	}
+}
+
 func TestTimestamp(t *testing.T) {
 	for ticks, want := range map[int64]string{0: "00:00:00.000", 172800: "00:00:01.920", 90000 * 3723: "01:02:03.000", 90000 * 100 * 3600: "100:00:00.000"} {
 		if got := Timestamp(ticks); got != want {

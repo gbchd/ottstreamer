@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Comcast/scte35-go/pkg/scte35"
+	"golang.org/x/text/language"
 
 	"ottstreamer/internal/adbreak"
 	"ottstreamer/internal/live"
@@ -93,6 +94,7 @@ type adaptationSetXML struct {
 	Switching         *descriptorXML      `xml:"SupplementalProperty"`
 	InbandEventStream *descriptorXML      `xml:"InbandEventStream"`
 	Label             string              `xml:"Label,omitempty"`
+	Accessibility     *descriptorXML      `xml:"Accessibility"`
 	Role              *descriptorXML      `xml:"Role"`
 	SegmentTemplate   segmentTemplateXML  `xml:"SegmentTemplate"`
 	Representations   []representationXML `xml:"Representation"`
@@ -343,6 +345,9 @@ func (req request) adaptationSets(o mpdOptions, sp span) []adaptationSetXML {
 		if o.inband {
 			as.InbandEventStream = &descriptorXML{SchemeIDURI: schemeInband}
 		}
+		if c := req.spec.CEA608; c != nil {
+			as.Accessibility = &descriptorXML{SchemeIDURI: "urn:scte:dash:cc:cea-608:2015", Value: c.Channel + "=" + iso639(c.Lang)}
+		}
 		set := add("video/"+string(v.Codec), as, representationXML{
 			ID: v.ID, Codecs: t.Codec, Width: v.Width, Height: v.Height, Bandwidth: v.BitrateKbps * 1000,
 		})
@@ -386,6 +391,13 @@ func (req request) adaptationSets(o mpdOptions, sp span) []adaptationSetXML {
 		}, representationXML{ID: s.ID, Codecs: t.Codec, Bandwidth: textBandwidth})
 	}
 	return sets
+}
+
+// iso639 is the ISO 639-2 code of a BCP 47 tag's language, "eng" for "en",
+// as SCTE 214-1 asks of the CEA-608 Accessibility value.
+func iso639(tag string) string {
+	base, _ := language.Make(tag).Base()
+	return base.ISO3()
 }
 
 // textBandwidth is a subtitle Representation's @bandwidth in bit/s: above
