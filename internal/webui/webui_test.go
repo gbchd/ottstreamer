@@ -21,6 +21,8 @@ func TestRegister(t *testing.T) {
 		{"root redirects", "/", http.StatusFound, "", ""},
 		{"index", "/ui/", http.StatusOK, "text/html", `<script type="importmap">`},
 		{"stream page", "/ui/streams/demo", http.StatusOK, "text/html", `<script type="importmap">`},
+		{"new stream page", "/ui/streams/new", http.StatusOK, "text/html", `<script type="importmap">`},
+		{"edit page", "/ui/streams/demo/edit", http.StatusOK, "text/html", `<script type="importmap">`},
 		{"app module", "/ui/app.js", http.StatusOK, "text/javascript", "render("},
 		{"vendored module", "/ui/vendor/hls.min.mjs", http.StatusOK, "text/javascript", ""},
 		{"stylesheet", "/ui/style.css", http.StatusOK, "text/css", ""},

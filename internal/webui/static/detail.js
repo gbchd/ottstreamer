@@ -129,9 +129,10 @@ function Header({ stream, canWrite, onChange }) {
     <p class="muted">${stream.id} · ${ladder(stream.spec)} · ${stream.spec.formats.join(', ')}
       ${status.epoch && html` · epoch ${status.epoch.number} · AST ${status.epoch.ast}${status.epoch.endSegment !== null ? ` · ends after segment ${status.epoch.endSegment}` : ''}`}</p>
     ${status.pendingChanges && html`<div class="banner">The spec changed since this epoch started: restart to apply.</div>`}
-    ${canWrite && html`<p>${status.state === 'running'
+    ${canWrite && html`<p class="inline">${status.state === 'running'
       ? html`<button disabled=${action.busy} onClick=${() => act('stop')}>Stop</button>`
-      : html`<button disabled=${action.busy} onClick=${() => act('start')}>Start</button>`}</p>`}
+      : html`<button disabled=${action.busy} onClick=${() => act('start')}>Start</button>`}
+      <${Link} href=${`/ui/streams/${encodeURIComponent(stream.id)}/edit`} class="button">Edit</${Link}></p>`}
     <${ErrorBox} error=${action.error} />
   </header>`;
 }

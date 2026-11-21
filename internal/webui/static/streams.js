@@ -46,8 +46,9 @@ export function Streams({ me }) {
   if (!rows) return html`<${ErrorBox} error=${error} />${!error && html`<p class="muted">Loading…</p>`}`;
   return html`
     <h1>Streams</h1>
+    ${me.role === 'write' && html`<p><${Link} href="/ui/streams/new" class="button">New stream</${Link}></p>`}
     <${ErrorBox} error=${error || action.error} />
-    ${rows.length === 0 && html`<p class="muted">No streams yet. Create one with POST /api/streams.</p>`}
+    ${rows.length === 0 && html`<p class="muted">No streams yet.</p>`}
     <table class="streams">
       <thead><tr><th>Stream</th><th>State</th><th>Uptime</th><th>Formats</th><th>Ladder</th><th>Live edge</th><th>Break</th><th>Health</th>${me.role === 'write' && html`<th></th>`}</tr></thead>
       <tbody>

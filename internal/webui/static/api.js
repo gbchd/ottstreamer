@@ -27,10 +27,10 @@ function headers(extra) {
 
 // api calls /api + path. body is sent as JSON; the reply is parsed as JSON,
 // or returned as text when it is not JSON.
-export async function api(path, { method = 'GET', body } = {}) {
+export async function api(path, { method = 'GET', body, headers: extra = {} } = {}) {
   const res = await fetch('/api' + path, {
     method,
-    headers: headers(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+    headers: headers({ ...extra, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (res.status === 401) unauthorized();

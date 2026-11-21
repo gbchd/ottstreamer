@@ -5,6 +5,7 @@ import { api, apiKey, onUnauthorized } from './api.js';
 import { html, Link, ErrorBox } from './ui.js';
 import { Streams } from './streams.js';
 import { Detail } from './detail.js';
+import { StreamForm } from './form.js';
 
 function usePath() {
   const [path, setPath] = useState(location.pathname);
@@ -64,7 +65,11 @@ function App() {
     apiKey.clear();
     setMe(null);
   };
-  const m = path.match(/^\/ui\/streams\/([^/]+)\/?$/);
+  const m = path.match(/^\/ui\/streams\/([^/]+)(\/edit)?\/?$/);
+  let page = html`<${Streams} me=${me} />`;
+  if (m?.[1] === 'new' && !m[2]) page = html`<${StreamForm} key="new" me=${me} />`;
+  else if (m?.[2]) page = html`<${StreamForm} key=${'edit-' + m[1]} id=${decodeURIComponent(m[1])} me=${me} />`;
+  else if (m) page = html`<${Detail} key=${m[1]} id=${decodeURIComponent(m[1])} me=${me} />`;
   return html`
     <header class="top">
       <${Link} href="/ui/" class="brand">ottstreamer</${Link}>
@@ -72,7 +77,7 @@ function App() {
       <button class="link" onClick=${signOut}>Sign out</button>
     </header>
     <main>
-      ${m ? html`<${Detail} key=${m[1]} id=${decodeURIComponent(m[1])} me=${me} />` : html`<${Streams} me=${me} />`}
+      ${page}
     </main>`;
 }
 
