@@ -334,6 +334,18 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         default: { $ref: "#/components/responses/Error" }
 
+  /api/me:
+    get:
+      operationId: getMe
+      summary: The API key the request carries, so a client can hide what its role may not do
+      responses:
+        "200":
+          description: Its name and role
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Me" }
+        default: { $ref: "#/components/responses/Error" }
+
   /api/time:
     get:
       operationId: getTime
@@ -395,6 +407,13 @@ components:
       properties:
         field: { type: string, example: "spec.video[1].bitrateKbps" }
         message: { type: string }
+
+    Me:
+      type: object
+      required: [name, role]
+      properties:
+        name: { type: string, example: qa-team }
+        role: { type: string, enum: [read, write], description: "read: GET only; write: everything" }
 
     CreateStreamRequest:
       type: object

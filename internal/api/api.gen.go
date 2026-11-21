@@ -246,6 +246,24 @@ func (e FaultRuleMode) Valid() bool {
 	}
 }
 
+// Defines values for MeRole.
+const (
+	Read  MeRole = "read"
+	Write MeRole = "write"
+)
+
+// Valid indicates whether the value is a known member of the MeRole enum.
+func (e MeRole) Valid() bool {
+	switch e {
+	case Read:
+		return true
+	case Write:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SpecFormats.
 const (
 	Dash SpecFormats = "dash"
@@ -618,6 +636,18 @@ type FieldError struct {
 	Message string `json:"message"`
 }
 
+// Me defines model for Me.
+type Me struct {
+	// Name Example: qa-team
+	Name string `json:"name"`
+
+	// Role read: GET only; write: everything
+	Role MeRole `json:"role"`
+}
+
+// MeRole read: GET only; write: everything
+type MeRole string
+
 // Overlay defines model for Overlay.
 type Overlay struct {
 	// RenditionLabel Burn "720p · 3000 kbit/s" into each rendition; default true
@@ -882,6 +912,9 @@ type StartStreamJSONRequestBody = StartRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// GetMe The API key the request carries, so a client can hide what its role may not do
+	// (GET /api/me)
+	GetMe(w http.ResponseWriter, r *http.Request)
 	// ListStreams List streams with their status
 	// (GET /api/streams)
 	ListStreams(w http.ResponseWriter, r *http.Request)
@@ -949,6 +982,20 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// GetMe operation middleware
+func (siw *ServerInterfaceWrapper) GetMe(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMe(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // ListStreams operation middleware
 func (siw *ServerInterfaceWrapper) ListStreams(w http.ResponseWriter, r *http.Request) {
@@ -1765,12 +1812,51 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/streams/{id}/faults", wrapper.ClearFaults)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/streams/{id}/faults", wrapper.GetFaults)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/api/streams/{id}/faults", wrapper.ReplaceFaults)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/me", wrapper.GetMe)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/time", wrapper.GetTime)
 
 	return m
 }
 
 type ErrorJSONResponse Error
+
+type GetMeRequestObject struct {
+}
+
+type GetMeResponseObject interface {
+	VisitGetMeResponse(w http.ResponseWriter) error
+}
+
+type GetMe200JSONResponse Me
+
+func (response GetMe200JSONResponse) VisitGetMeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMedefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response GetMedefaultJSONResponse) VisitGetMeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
 
 type ListStreamsRequestObject struct {
 }
@@ -2954,6 +3040,9 @@ func (response GetTime200TextResponse) VisitGetTimeResponse(w http.ResponseWrite
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// GetMe The API key the request carries, so a client can hide what its role may not do
+	// (GET /api/me)
+	GetMe(ctx context.Context, request GetMeRequestObject) (GetMeResponseObject, error)
 	// ListStreams List streams with their status
 	// (GET /api/streams)
 	ListStreams(ctx context.Context, request ListStreamsRequestObject) (ListStreamsResponseObject, error)
@@ -3050,6 +3139,30 @@ type strictHandler struct {
 	ssi         StrictServerInterface
 	middlewares []StrictMiddlewareFunc
 	options     StrictHTTPServerOptions
+}
+
+// GetMe operation middleware
+func (sh *strictHandler) GetMe(w http.ResponseWriter, r *http.Request) {
+	var request GetMeRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetMe(ctx, request.(GetMeRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetMe")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetMeResponseObject); ok {
+		if err := validResponse.VisitGetMeResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
 }
 
 // ListStreams operation middleware

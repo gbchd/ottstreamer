@@ -14,7 +14,9 @@ func TestNew(t *testing.T) {
 		t.Fatal(err)
 	}
 	var seen string
-	h := auth(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { seen = apikey.Name(r.Context()) }))
+	h := auth(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		seen = apikey.Name(r.Context()) + ":" + apikey.Role(r.Context())
+	}))
 
 	tests := []struct {
 		name, method, header string
@@ -25,9 +27,9 @@ func TestNew(t *testing.T) {
 		{"not bearer", http.MethodGet, "Basic s3cret", http.StatusUnauthorized, ""},
 		{"unknown key", http.MethodGet, "Bearer nope", http.StatusUnauthorized, ""},
 		{"prefix of a key", http.MethodGet, "Bearer s3cre", http.StatusUnauthorized, ""},
-		{"write key mutates", http.MethodPost, "Bearer s3cret", http.StatusOK, "ci"},
-		{"read key reads", http.MethodGet, "Bearer peek:with:colons", http.StatusOK, "dash"},
-		{"read key heads", http.MethodHead, "Bearer peek:with:colons", http.StatusOK, "dash"},
+		{"write key mutates", http.MethodPost, "Bearer s3cret", http.StatusOK, "ci:write"},
+		{"read key reads", http.MethodGet, "Bearer peek:with:colons", http.StatusOK, "dash:read"},
+		{"read key heads", http.MethodHead, "Bearer peek:with:colons", http.StatusOK, "dash:read"},
 		{"read key mutates", http.MethodDelete, "Bearer peek:with:colons", http.StatusForbidden, ""},
 	}
 	for _, tt := range tests {
