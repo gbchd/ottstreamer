@@ -3,7 +3,6 @@ package stream_test
 import (
 	"errors"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -105,8 +104,11 @@ func TestSpec_Validate(t *testing.T) {
 				s.Video = append(s.Video, stream.Video{ID: string(rune('a' + i)), Codec: "h264", Profile: "high", Width: 640, Height: 360, BitrateKbps: 100 + i})
 			}
 		}, []string{"spec.video"}},
-		{"hevc", func(s *stream.Spec) { s.Video[0].Codec = stream.CodecHEVC }, []string{"spec.video[0].codec"}},
-		{"av1", func(s *stream.Spec) { s.Video[0].Codec = stream.CodecAV1 }, []string{"spec.video[0].codec"}},
+		{"hevc profile", func(s *stream.Spec) { s.Video[0].Codec, s.Video[0].Profile = stream.CodecHEVC, "high" }, []string{"spec.video[0].profile"}},
+		{"av1 profile and depth", func(s *stream.Spec) {
+			s.Video[0].Codec, s.Video[0].Profile, s.Video[0].BitDepth = stream.CodecAV1, "high", 12
+		}, []string{"spec.video[0].profile", "spec.video[0].bitDepth"}},
+		{"bit depth on h264", func(s *stream.Spec) { s.Video[0].BitDepth = 10 }, []string{"spec.video[0].bitDepth"}},
 		{"vp9", func(s *stream.Spec) { s.Video[1].Codec = "vp9" }, []string{"spec.video[1].codec"}},
 		{"bad profile", func(s *stream.Spec) { s.Video[0].Profile = "main10" }, []string{"spec.video[0].profile"}},
 		{"odd width", func(s *stream.Spec) { s.Video[0].Width = 1279 }, []string{"spec.video[0].width"}},
@@ -119,8 +121,8 @@ func TestSpec_Validate(t *testing.T) {
 		{"no audio", func(s *stream.Spec) { s.Audio = nil }, []string{"spec.audio"}},
 		{"bad lang", func(s *stream.Spec) { s.Audio[0].Lang = "english!" }, []string{"spec.audio[0].lang"}},
 		{"4 channels", func(s *stream.Spec) { s.Audio[0].Channels = 4 }, []string{"spec.audio[0].channels"}},
-		{"eac3", func(s *stream.Spec) { s.Audio[0].Codec = stream.CodecEAC3 }, []string{"spec.audio[0].codec"}},
-		{"opus", func(s *stream.Spec) { s.Audio[0].Codec = stream.CodecOpus }, []string{"spec.audio[0].codec"}},
+		{"eac3 bitrate", func(s *stream.Spec) { s.Audio[0].Codec, s.Audio[0].BitrateKbps = stream.CodecEAC3, 64 }, []string{"spec.audio[0].bitrateKbps"}},
+		{"opus bitrate", func(s *stream.Spec) { s.Audio[0].Codec, s.Audio[0].BitrateKbps = stream.CodecOpus, 400 }, []string{"spec.audio[0].bitrateKbps"}},
 		{"mp3", func(s *stream.Spec) { s.Audio[0].Codec = "mp3" }, []string{"spec.audio[0].codec"}},
 		{"aac bitrate", func(s *stream.Spec) { s.Audio[0].BitrateKbps = 384 }, []string{"spec.audio[0].bitrateKbps"}},
 		{"ac3 bitrate", func(s *stream.Spec) { s.Audio[0].Codec = stream.CodecAC3 }, []string{"spec.audio[0].bitrateKbps"}},
@@ -184,14 +186,20 @@ func TestSpec_Validate(t *testing.T) {
 	}
 }
 
-func TestSpec_Validate_NotSupportedYet(t *testing.T) {
+func TestSpec_Normalize_CodecDefaults(t *testing.T) {
 	s := streamtest.Spec()
+	s.Video = append(s.Video,
+		stream.Video{ID: "hevc", Codec: stream.CodecHEVC, Width: 1280, Height: 720, BitrateKbps: 2000},
+		stream.Video{ID: "av1", Codec: stream.CodecAV1, Width: 1280, Height: 720, BitrateKbps: 1500})
+	s.Audio = append(s.Audio,
+		stream.Audio{ID: "ec3", Lang: "en", Channels: 6, BitrateKbps: 384, Codec: stream.CodecEAC3},
+		stream.Audio{ID: "opus", Lang: "en", Channels: 2, BitrateKbps: 96, Codec: stream.CodecOpus})
 	s.Normalize()
-	s.Video[0].Codec = stream.CodecAV1
-	s.Audio[0].Codec = stream.CodecOpus
-	err := s.Validate()
-	if err == nil || strings.Count(err.Error(), "not supported yet") != 2 {
-		t.Fatalf("Validate = %v, want two \"not supported yet\"", err)
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if av1, hevc := s.Video[0], s.Video[1]; av1.ID != "av1" || av1.Profile != "main" || av1.BitDepth != 8 || hevc.ID != "hevc" || hevc.Profile != "main" || hevc.BitDepth != 0 {
+		t.Errorf("ladder = %+v, want av1 main 8-bit, then hevc main", s.Video[:2])
 	}
 }
 

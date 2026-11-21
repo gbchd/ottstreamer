@@ -59,7 +59,7 @@ func toSpec(in Spec) stream.Spec {
 	}
 	for _, v := range in.Video {
 		s.Video = append(s.Video, stream.Video{
-			ID: v.Id, Codec: stream.VideoCodec(v.Codec), Profile: v.Profile,
+			ID: v.Id, Codec: stream.VideoCodec(v.Codec), Profile: v.Profile, BitDepth: int(v.BitDepth),
 			Width: v.Width, Height: v.Height, BitrateKbps: v.BitrateKbps,
 		})
 	}
@@ -104,14 +104,14 @@ func fromSpec(s stream.Spec) Spec {
 	}
 	for _, v := range s.Video {
 		out.Video = append(out.Video, Video{
-			Id: v.ID, Codec: string(v.Codec), Profile: v.Profile,
+			Id: v.ID, Codec: VideoCodec(v.Codec), Profile: v.Profile, BitDepth: VideoBitDepth(v.BitDepth),
 			Width: v.Width, Height: v.Height, BitrateKbps: v.BitrateKbps,
 		})
 	}
 	for _, a := range s.Audio {
 		out.Audio = append(out.Audio, Audio{
 			Id: a.ID, Lang: a.Lang, Name: a.Name, Channels: AudioChannels(a.Channels), BitrateKbps: a.BitrateKbps,
-			Codec: string(a.Codec), Group: a.Group, Default: a.Default, TicHz: a.TicHz, TocHz: a.TocHz,
+			Codec: AudioCodec(a.Codec), Group: a.Group, Default: a.Default, TicHz: a.TicHz, TocHz: a.TocHz,
 		})
 	}
 	return out

@@ -467,8 +467,9 @@ components:
       required: [id, width, height, bitrateKbps]
       properties:
         id: { type: string }
-        codec: { type: string, description: "h264 (default); hevc and av1 are not supported yet" }
-        profile: { type: string, description: "baseline, main or high (default)" }
+        codec: { type: string, enum: [h264, hevc, av1], description: "Default h264" }
+        profile: { type: string, description: "h264: baseline, main or high (default); hevc: main (default) or main10; av1: main" }
+        bitDepth: { type: integer, enum: [8, 10], description: "av1 only; default 8" }
         width: { type: integer }
         height: { type: integer }
         bitrateKbps: { type: integer }
@@ -481,7 +482,7 @@ components:
         name: { type: string }
         channels: { type: integer, enum: [1, 2, 6] }
         bitrateKbps: { type: integer }
-        codec: { type: string, description: "aac (default) or ac3; eac3 and opus are not supported yet" }
+        codec: { type: string, enum: [aac, ac3, eac3, opus], description: "Default aac" }
         group: { type: string, description: "Bitrate tier; default main" }
         default: { type: boolean }
         ticHz: { type: integer, description: "Beep on odd seconds; default steps up per language" }

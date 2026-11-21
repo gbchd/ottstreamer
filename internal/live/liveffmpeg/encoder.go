@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,7 +20,9 @@ import (
 	"time"
 
 	"github.com/Eyevinn/mp4ff/aac"
+	"github.com/Eyevinn/mp4ff/av1"
 	"github.com/Eyevinn/mp4ff/avc"
+	"github.com/Eyevinn/mp4ff/hevc"
 	"github.com/Eyevinn/mp4ff/mp4"
 	"golang.org/x/image/font/gofont/gomono"
 	"golang.org/x/sync/errgroup"
@@ -51,6 +54,10 @@ type Encoder struct {
 
 	mu       sync.Mutex
 	overlays map[string]bool // overlay cycle files already rendered
+
+	encMu    sync.Mutex
+	encoders map[string]bool // what ffmpeg -encoders listed, on first use
+	used     map[string]bool // encoders of every epoch started since boot
 }
 
 // NewEncoder checks that ffmpegPath runs and writes the Go Mono font into
@@ -70,12 +77,13 @@ func NewEncoder(ffmpegPath, tmpDir string, maxProcs int, metrics Metrics, logger
 	if err := os.WriteFile(font, gomono.TTF, 0o600); err != nil {
 		return nil, fmt.Errorf("write font: %w", err)
 	}
-	return &Encoder{ffmpeg: path, tmpDir: tmpDir, font: font, sem: make(chan struct{}, maxProcs), metrics: metrics, logger: logger, overlays: map[string]bool{}}, nil
+	return &Encoder{ffmpeg: path, tmpDir: tmpDir, font: font, sem: make(chan struct{}, maxProcs), metrics: metrics, logger: logger, overlays: map[string]bool{}, used: map[string]bool{}}, nil
 }
 
 // Check runs ffmpeg -version and returns the version it reports. It fails
-// when ffmpeg does not run, lacks libx264, or differs from pin (when set):
-// segments are byte-identical only across replicas on the same ffmpeg.
+// when ffmpeg does not run, lacks libx264, differs from pin (when set), or
+// no longer lists an encoder used by an epoch started since boot: segments
+// are byte-identical only across replicas on the same ffmpeg.
 func (e *Encoder) Check(ctx context.Context, pin string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -94,7 +102,84 @@ func (e *Encoder) Check(ctx context.Context, pin string) (string, error) {
 	case pin != "" && v != pin:
 		return v, fmt.Errorf("ffmpeg %s: want pinned version %s", v, pin)
 	}
+	e.encMu.Lock()
+	used := slices.Sorted(maps.Keys(e.used))
+	e.encMu.Unlock()
+	if len(used) == 0 {
+		return v, nil
+	}
+	have, err := e.listEncoders(ctx)
+	if err != nil {
+		return v, err
+	}
+	var missing []string
+	for _, name := range used {
+		if !have[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return v, fmt.Errorf("ffmpeg %s: lacks %s, used by a started stream", v, strings.Join(missing, ", "))
+	}
 	return v, nil
+}
+
+// listEncoders returns the encoder names ffmpeg -encoders lists.
+func (e *Encoder) listEncoders(ctx context.Context) (map[string]bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, e.ffmpeg, "-hide_banner", "-encoders").Output() //nolint:gosec // the binary is operator config
+	if err != nil {
+		return nil, fmt.Errorf("ffmpeg -encoders: %w", err)
+	}
+	// A legend, a " ------" line, then one " V....D name  description" per encoder.
+	_, list, _ := bytes.Cut(out, []byte("------"))
+	names := map[string]bool{}
+	for line := range bytes.Lines(list) {
+		if f := bytes.Fields(line); len(f) >= 2 {
+			names[string(f[1])] = true
+		}
+	}
+	return names, nil
+}
+
+// checkEncoders fails with a *stream.ValidationError naming every rendition
+// of spec whose encoder the local ffmpeg lacks, and records the encoders of
+// spec as used otherwise.
+//
+// ponytail: used never shrinks when streams stop, so /readyz keeps checking
+// an encoder no running stream needs; refcount by stream if that matters.
+func (e *Encoder) checkEncoders(ctx context.Context, spec stream.Spec) error {
+	e.encMu.Lock()
+	defer e.encMu.Unlock()
+	if e.encoders == nil {
+		have, err := e.listEncoders(ctx)
+		if err != nil {
+			return err
+		}
+		e.encoders = have
+	}
+	var verr stream.ValidationError
+	need := make([]string, 0, len(spec.Video)+len(spec.Audio))
+	add := func(field, name string) {
+		need = append(need, name)
+		if !e.encoders[name] {
+			verr.Fields = append(verr.Fields, stream.FieldError{Field: field, Message: name + " is missing from the local ffmpeg"})
+		}
+	}
+	for i, v := range spec.Video {
+		add(fmt.Sprintf("spec.video[%d].codec", i), videoEncoders[v.Codec])
+	}
+	for i, a := range spec.Audio {
+		add(fmt.Sprintf("spec.audio[%d].codec", i), audioEncoders[a.Codec])
+	}
+	if len(verr.Fields) > 0 {
+		return &verr
+	}
+	for _, name := range need {
+		e.used[name] = true
+	}
+	return nil
 }
 
 // EncodeSegment encodes video segment n of s's current epoch for every
@@ -113,11 +198,15 @@ func (e *Encoder) EncodeSegment(ctx context.Context, s stream.Stream, n int64, i
 
 // StartEpoch builds the init segments of every track of s's current epoch
 // and the audio loops. Video comes from a run of segment 0; the audio
-// renditions are encoded alongside it.
+// renditions are encoded alongside it. It fails with a
+// *stream.ValidationError before running ffmpeg when an encoder is missing.
 func (e *Encoder) StartEpoch(ctx context.Context, s stream.Stream) (map[string]live.Track, error) {
 	ep := s.Status.Epoch
 	if ep == nil {
 		return nil, fmt.Errorf("stream %s: no epoch", s.ID)
+	}
+	if err := e.checkEncoders(ctx, ep.Spec); err != nil {
+		return nil, err
 	}
 	tracks := make([]live.Track, len(ep.Spec.Video)+len(ep.Spec.Audio))
 	g, gctx := errgroup.WithContext(ctx)
@@ -127,7 +216,7 @@ func (e *Encoder) StartEpoch(ctx context.Context, s stream.Stream) (map[string]l
 			return err
 		}
 		for i, v := range ep.Spec.Video {
-			if tracks[i], err = videoTrack(v.ID, files[v.ID]); err != nil {
+			if tracks[i], err = videoTrack(v, files[v.ID]); err != nil {
 				return err
 			}
 		}
@@ -181,7 +270,7 @@ func (e *Encoder) encodeVideo(ctx context.Context, s stream.Stream, n int64, inA
 		if err != nil {
 			return nil, fmt.Errorf("segment %d, rendition %s: %w", n, v.ID, err)
 		}
-		if err := checkVideo(samples(f), tl.SegFrames); err != nil {
+		if err := checkVideo(f, tl.SegFrames); err != nil {
 			return nil, fmt.Errorf("segment %d, rendition %s: %w", n, v.ID, err)
 		}
 		files[v.ID] = f
@@ -206,14 +295,35 @@ func (e *Encoder) overlayFile(ctx context.Context, streamID string, spec stream.
 	return path, nil
 }
 
-func checkVideo(ss []live.Sample, want int64) error {
+// checkVideo checks f holds want samples, the first one a key frame.
+func checkVideo(f *mp4.File, want int64) error {
+	ss := samples(f)
 	if int64(len(ss)) != want {
 		return fmt.Errorf("got %d frames, want %d", len(ss), want)
 	}
-	if !ss[0].Sync || !avc.IsIDRSample(ss[0].Data) {
-		return errors.New("first frame is not an IDR")
+	if !ss[0].Sync || !keyFrame(f.Init.Moov.Trak.Mdia.Minf.Stbl.Stsd, ss[0].Data) {
+		return errors.New("first frame is not a key frame")
 	}
 	return nil
+}
+
+// keyFrame reports whether sample is an IDR (H.264, HEVC) or a key frame
+// (AV1) of the track stsd describes.
+func keyFrame(stsd *mp4.StsdBox, sample []byte) bool {
+	switch {
+	case stsd.AvcX != nil:
+		return avc.IsIDRSample(sample)
+	case stsd.HvcX != nil:
+		return hevc.IsIDRSample(sample)
+	case stsd.Av01 != nil && stsd.Av01.Av1C != nil:
+		sh, err := stsd.Av01.Av1C.SequenceHeader()
+		if err != nil {
+			return false
+		}
+		key, err := av1.IsRAPSample(sample, sh)
+		return err == nil && key
+	}
+	return false
 }
 
 func (e *Encoder) audioTrack(ctx context.Context, s stream.Stream, a stream.Audio) (live.Track, error) {
@@ -314,24 +424,59 @@ func samples(f *mp4.File) []live.Sample {
 	return out
 }
 
-func videoTrack(id string, f *mp4.File) (live.Track, error) {
-	avcx := f.Init.Moov.Trak.Mdia.Minf.Stbl.Stsd.AvcX
-	if avcx == nil || avcx.AvcC == nil || len(avcx.AvcC.SPSnalus) == 0 {
-		return live.Track{}, fmt.Errorf("rendition %s: no avcC in ffmpeg output", id)
-	}
-	sps, err := avc.ParseSPSNALUnit(avcx.AvcC.SPSnalus[0], false)
+// videoTrack builds v's init segment from the encoder's own configuration:
+// avc1 + avcC, hvc1 + hvcC or av01 + av1C.
+func videoTrack(v stream.Video, f *mp4.File) (live.Track, error) {
+	codec, init, err := videoInit(v.Codec, f.Init.Moov.Trak.Mdia.Minf.Stbl.Stsd)
 	if err != nil {
-		return live.Track{}, fmt.Errorf("rendition %s: parse SPS: %w", id, err)
-	}
-	init, trak := newInit(timeline.VideoTimescale, "video", "und")
-	if err := trak.SetAVCDescriptor("avc1", avcx.AvcC.SPSnalus, avcx.AvcC.PPSnalus, true); err != nil {
-		return live.Track{}, fmt.Errorf("rendition %s: %w", id, err)
+		return live.Track{}, fmt.Errorf("rendition %s: %w", v.ID, err)
 	}
 	b, err := encodeInit(init)
 	if err != nil {
-		return live.Track{}, fmt.Errorf("rendition %s: %w", id, err)
+		return live.Track{}, fmt.Errorf("rendition %s: %w", v.ID, err)
 	}
-	return live.Track{ID: id, Video: true, Timescale: timeline.VideoTimescale, Codec: avc.CodecString("avc1", sps), Init: b}, nil
+	return live.Track{ID: v.ID, Video: true, Timescale: timeline.VideoTimescale, Codec: codec, Init: b}, nil
+}
+
+// videoInit returns the codec string and init segment of a video track
+// whose sample entry ffmpeg wrote as entry.
+func videoInit(c stream.VideoCodec, entry *mp4.StsdBox) (string, *mp4.InitSegment, error) {
+	init, trak := newInit(timeline.VideoTimescale, "video", "und")
+	switch c {
+	case stream.CodecHEVC:
+		if entry.HvcX == nil || entry.HvcX.HvcC == nil {
+			return "", nil, errors.New("no hvcC in ffmpeg output")
+		}
+		hvcC := entry.HvcX.HvcC
+		spss := hvcC.GetNalusForType(hevc.NALU_SPS)
+		if len(spss) == 0 {
+			return "", nil, errors.New("no SPS in hvcC")
+		}
+		sps, err := hevc.ParseSPSNALUnit(spss[0])
+		if err != nil {
+			return "", nil, fmt.Errorf("parse SPS: %w", err)
+		}
+		err = trak.SetHEVCDescriptor("hvc1", hvcC.GetNalusForType(hevc.NALU_VPS), spss, hvcC.GetNalusForType(hevc.NALU_PPS), nil, true)
+		return hevc.CodecString("hvc1", sps), init, err
+	case stream.CodecAV1:
+		av01 := entry.Av01
+		if av01 == nil || av01.Av1C == nil {
+			return "", nil, errors.New("no av1C in ffmpeg output")
+		}
+		err := trak.SetAV1Descriptor("av01", av01.Av1C, av01.Width, av01.Height)
+		return av01.Av1C.CodecString("av01"), init, err
+	default:
+		avcx := entry.AvcX
+		if avcx == nil || avcx.AvcC == nil || len(avcx.AvcC.SPSnalus) == 0 {
+			return "", nil, errors.New("no avcC in ffmpeg output")
+		}
+		sps, err := avc.ParseSPSNALUnit(avcx.AvcC.SPSnalus[0], false)
+		if err != nil {
+			return "", nil, fmt.Errorf("parse SPS: %w", err)
+		}
+		err = trak.SetAVCDescriptor("avc1", avcx.AvcC.SPSnalus, avcx.AvcC.PPSnalus, true)
+		return avc.CodecString("avc1", sps), init, err
+	}
 }
 
 // audioTrack builds a's init segment from the encoder's own configuration and
@@ -362,6 +507,26 @@ func audioTrack(a stream.Audio, f *mp4.File) (live.Track, error) {
 			return live.Track{}, err
 		}
 		codec = "ac-3"
+	case stream.CodecEAC3:
+		if entry.EC3 == nil || entry.EC3.Dec3 == nil || len(entry.EC3.Dec3.EC3Subs) == 0 {
+			return live.Track{}, errors.New("no dec3 in ffmpeg output")
+		}
+		if err := trak.SetEC3Descriptor(entry.EC3.Dec3); err != nil {
+			return live.Track{}, err
+		}
+		codec = "ec-3"
+	case stream.CodecOpus:
+		// mp4ff has no SetOpusDescriptor: an Opus entry carries ffmpeg's dOps,
+		// with no pre-skip. The loop starts long after the encoder's priming,
+		// and frame k already plays pattern time k*FrameSize, as AAC and AC-3
+		// frames do without an edit list.
+		if entry.Opus == nil || entry.Opus.Dops == nil {
+			return live.Track{}, errors.New("no dOps in ffmpeg output")
+		}
+		dops := *entry.Opus.Dops
+		dops.PreSkip = 0
+		trak.Mdia.Minf.Stbl.Stsd.AddChild(mp4.CreateAudioSampleEntryBox("Opus", uint16(dops.OutputChannelCount), 16, timeline.AudioTimescale, &dops))
+		codec = "opus"
 	default:
 		return live.Track{}, fmt.Errorf("unsupported audio codec %q", a.Codec)
 	}

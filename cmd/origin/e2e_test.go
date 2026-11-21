@@ -179,7 +179,9 @@ const e2eStream = `{"id": "e2e", "name": "End to end", "spec": {
   "segmentSeconds": 1,
   "video": [
     {"id": "180p", "width": 320, "height": 180, "bitrateKbps": 300},
-    {"id": "144p", "width": 256, "height": 144, "bitrateKbps": 150}
+    {"id": "144p", "width": 256, "height": 144, "bitrateKbps": 150},
+    {"id": "144p-hevc", "codec": "hevc", "width": 256, "height": 144, "bitrateKbps": 150},
+    {"id": "144p-av1", "codec": "av1", "width": 256, "height": 144, "bitrateKbps": 150}
   ],
   "audio": [
     {"id": "en", "lang": "en", "name": "English", "channels": 2, "bitrateKbps": 96, "default": true},
@@ -210,11 +212,12 @@ func TestEndToEnd(t *testing.T) {
 	// Live edge 15: the whole break is in the 10 s window.
 	e.clock.set(t0.Add(16 * time.Second))
 	master := string(e.live("master.m3u8"))
-	if !strings.Contains(master, `CODECS="avc1.`) || !strings.Contains(master, `,mp4a.40.2,ac-3"`) {
+	av1, hevc, avc := strings.Index(master, `CODECS="av01.`), strings.Index(master, `CODECS="hvc1.`), strings.Index(master, `CODECS="avc1.`)
+	if av1 < 0 || hevc < av1 || avc < hevc || !strings.Contains(master, `,mp4a.40.2,ac-3"`) {
 		t.Errorf("master:\n%s", master)
 	}
 	var cues string
-	for _, r := range []string{"180p", "144p", "en", "en-51"} {
+	for _, r := range []string{"180p", "144p", "144p-hevc", "144p-av1", "en", "en-51"} {
 		pl := string(e.live(r + ".m3u8"))
 		for _, tag := range []string{`#EXT-X-DATERANGE:ID="1",START-DATE="2026-11-06T18:00:10.000Z",PLANNED-DURATION=3.000,SCTE35-OUT=0xFC30`,
 			"#EXT-X-CUE-OUT:DURATION=3", "#EXT-X-CUE-OUT-CONT:ElapsedTime=1,Duration=3", `END-DATE="2026-11-06T18:00:13.000Z",SCTE35-IN=0xFC30`, "#EXT-X-CUE-IN"} {
@@ -235,7 +238,8 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 	mpd := string(e.live("manifest.mpd"))
-	for _, want := range []string{`<InbandEventStream schemeIdUri="urn:scte:scte35:2013:bin"`, `<Event id="1" presentationTime="900000" duration="270000">`, `/api/time?stream=e2e"`} {
+	for _, want := range []string{`<InbandEventStream schemeIdUri="urn:scte:scte35:2013:bin"`, `<Event id="1" presentationTime="900000" duration="270000">`, `/api/time?stream=e2e"`,
+		`<SupplementalProperty schemeIdUri="urn:mpeg:dash:adaptation-set-switching:2016" value="2,3">`} {
 		if !strings.Contains(mpd, want) {
 			t.Errorf("MPD lacks %s:\n%s", want, mpd)
 		}
@@ -248,13 +252,19 @@ func TestEndToEnd(t *testing.T) {
 			t.Errorf("segment %d carries emsg: %v, want %v", n, got, want)
 		}
 	}
+	for _, r := range []string{"144p-hevc", "144p-av1"} {
+		if !bytes.Contains(e.live(r+"/8.m4s"), scheme) {
+			t.Errorf("%s segment 8 lacks the emsg", r)
+		}
+	}
 	if bytes.Contains(e.live("en/9.m4s"), scheme) {
 		t.Error("audio segment 9 carries emsg")
 	}
 
 	// Ad segments are red, the others grey.
 	// A spot right of the clock and above the disc, 7/8 across and 1/6 down.
-	spots := map[string][2]int{"180p": {280, 30}, "144p": {224, 24}}
+	spots := map[string][2]int{"180p": {280, 30}, "144p": {224, 24}, "144p-hevc": {224, 24}, "144p-av1": {224, 24}}
+	codecOf := map[string]string{"180p": "h264", "144p": "h264", "144p-hevc": "hevc", "144p-av1": "av1"}
 	for n, red := range map[int64]bool{9: false, 10: true, 12: true, 13: false} {
 		want := [2]int{40, 128} // grey: Y, Cr
 		if red {
@@ -262,7 +272,7 @@ func TestEndToEnd(t *testing.T) {
 		}
 		for r, at := range spots {
 			f := e.file(r, n)
-			if c := probe(t, f); c != "h264 25" {
+			if c := probe(t, f); c != codecOf[r]+" 25" {
 				t.Errorf("%s/%d: codec %q", r, n, c)
 			}
 			if y, cr := background(t, f, at[0], at[1]); !near(y, want[0]) || !near(cr, want[1]) {

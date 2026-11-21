@@ -167,7 +167,7 @@ func TestCreateStream(t *testing.T) {
 
 func TestCreateStream_Invalid(t *testing.T) {
 	srv, _ := newServer(t)
-	body := strings.Replace(demo, `"bitrateKbps": 3000`, `"bitrateKbps": 3000, "codec": "hevc"`, 1)
+	body := strings.Replace(demo, `"bitrateKbps": 3000`, `"bitrateKbps": 3000, "codec": "vp9"`, 1)
 	body = strings.Replace(body, `"segmentSeconds": 1.92`, `"segmentSeconds": 1.92, "fps": 30`, 1)
 
 	r := do(t, srv, http.MethodPost, "/api/streams", body)
@@ -176,7 +176,7 @@ func TestCreateStream_Invalid(t *testing.T) {
 	for i := 0; get(r.body, "fields", i) != nil; i++ {
 		fields[get(r.body, "fields", i, "field").(string)] = get(r.body, "fields", i, "message").(string)
 	}
-	if !strings.Contains(fields["spec.video[0].codec"], "not supported yet") || fields["spec.segmentSeconds"] == "" {
+	if !strings.Contains(fields["spec.video[0].codec"], "must be") || fields["spec.segmentSeconds"] == "" {
 		t.Errorf("fields = %v", fields)
 	}
 }

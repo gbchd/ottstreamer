@@ -22,10 +22,10 @@ type Track struct {
 	ID        string
 	Video     bool
 	Timescale uint32   // 90000 video, 48000 audio
-	Codec     string   // RFC 6381, e.g. avc1.640028, mp4a.40.2, ac-3
+	Codec     string   // RFC 6381, e.g. avc1.640028, hvc1.1.6.L120.90, av01.0.08M.08, mp4a.40.2, ac-3, ec-3, opus
 	Init      []byte   // ftyp (cmfc, iso6, dash) + moov
 	FrameSize int      // audio: samples per frame
-	Loop      []Sample // audio: steady-state 8 s loop (375 AAC / 250 AC-3 frames)
+	Loop      []Sample // audio: steady-state 8 s loop (375 AAC / 250 AC-3 and E-AC-3 / 400 Opus frames)
 }
 
 // Encoder produces the media of an epoch.
@@ -42,10 +42,11 @@ type Fragment struct {
 	Seq       uint32 // n + 1
 	TrackID   uint32 // 1
 	BaseTime  uint64 // tfdt in track timescale
+	Codec     string // the track's RFC 6381 codec string; picks the filler
 	SampleDur uint32
 	Samples   []Sample
 	Emsgs     []adbreak.Signal // video only
-	PadTo     int              // video: total mdat payload bytes to reach with H.264 filler NALs (type 12); 0 = none
+	PadTo     int              // video: total mdat payload bytes to reach with codec filler; 0 = none
 }
 
 // SegmentWriter writes CMAF media segments.

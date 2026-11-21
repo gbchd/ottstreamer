@@ -1,8 +1,10 @@
 package liveffmpeg
 
 import (
+	"cmp"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +14,15 @@ import (
 
 // barColours are the 75% SMPTE bars: grey, yellow, cyan, green, magenta, red, blue.
 var barColours = []string{"0xBFBFBF", "0xBFBF00", "0x00BFBF", "0x00BF00", "0xBF00BF", "0xBF0000", "0x0000BF"}
+
+// top returns the rendition the picture is drawn at before scaling: the
+// tallest, then the widest. The ladder is grouped by codec, so it need not
+// be the first one.
+func top(spec stream.Spec) stream.Video {
+	return slices.MaxFunc(spec.Video, func(a, b stream.Video) int {
+		return cmp.Or(cmp.Compare(a.Height, b.Height), cmp.Compare(a.Width, b.Width))
+	})
+}
 
 // geometry returns the sweep disc's diameter, the waveform strip's height
 // and the colour bars' inset for a top rendition h pixels tall.
@@ -26,7 +37,8 @@ func geometry(h int) (disc, strip, inset int) {
 // instead of evaluating geq per pixel, which cost more than x264 did.
 func buildOverlayArgs(spec stream.Spec, out string) []string {
 	fps := spec.FPS
-	w, h := spec.Video[0].Width, spec.Video[0].Height
+	t := top(spec)
+	w, h := t.Width, t.Height
 	disc, strip, _ := geometry(h)
 	odd := fmt.Sprintf("mod(floor(N/%d),2)", fps)
 
@@ -66,8 +78,8 @@ func buildVideoArgs(e stream.Epoch, n int64, loc *time.Location, inAd bool, font
 	spec := e.Spec
 	tl := e.Timeline()
 	fps := spec.FPS
-	top := spec.Video[0]
-	w, h := top.Width, top.Height
+	t := top(spec)
+	w, h := t.Width, t.Height
 	disc, strip, inset := geometry(h)
 
 	// Frame f counts from AST; drawtext and enable see it as n.
@@ -108,7 +120,7 @@ func buildVideoArgs(e stream.Epoch, n int64, loc *time.Location, inAd bool, font
 			ops = append(ops, fmt.Sprintf("scale=%d:%d", v.Width, v.Height))
 		}
 		if spec.RenditionLabel {
-			label := fmt.Sprintf("%s · %d×%d · %d kbit/s", v.ID, v.Width, v.Height, v.BitrateKbps)
+			label := fmt.Sprintf("%s · %s · %d×%d · %d kbit/s", v.ID, codecNames[v.Codec], v.Width, v.Height, v.BitrateKbps)
 			ops = append(ops, text(fmt.Sprintf("text=%s:x=w-tw-%[2]d:y=h-th-%[2]d:fontsize=%d:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=%d",
 				quote(label), v.Height/24, v.Height/18, max(v.Height/120, 1))))
 		}
@@ -135,21 +147,63 @@ func buildVideoArgs(e stream.Epoch, n int64, loc *time.Location, inAd bool, font
 	)
 	gop := strconv.FormatInt(int64(spec.GOPDuration)*int64(fps)/int64(time.Second), 10)
 	frames := strconv.FormatInt(tl.SegFrames, 10)
-	kbps := func(k int) string { return strconv.Itoa(k) + "k" }
 	for i, v := range spec.Video {
+		args = append(args, "-map", fmt.Sprintf("[o%d]", i))
+		args = append(args, encoderArgs(v, gop)...)
 		args = append(args,
-			"-map", fmt.Sprintf("[o%d]", i),
-			// One x264 thread per rendition: threaded VBV rate control is not
-			// deterministic, and the filters, not x264, bound the wall time.
-			"-c:v", "libx264", "-threads", "1", "-profile:v", v.Profile, "-preset", "veryfast",
-			"-b:v", kbps(v.BitrateKbps), "-maxrate", kbps(v.BitrateKbps), "-bufsize", kbps(2*v.BitrateKbps),
-			"-g", gop, "-keyint_min", gop, "-sc_threshold", "0", "-bf", "0", "-x264-params", "open-gop=0",
 			"-frames:v", frames,
 			"-f", "mp4", "-movflags", "empty_moov+default_base_moof+frag_keyframe",
 			filepath.Join(dir, v.ID+".mp4"),
 		)
 	}
 	return args
+}
+
+// videoEncoders is the ffmpeg encoder of each video codec.
+var videoEncoders = map[stream.VideoCodec]string{
+	stream.CodecH264: "libx264", stream.CodecHEVC: "libx265", stream.CodecAV1: "libsvtav1",
+}
+
+// codecNames label the renditions.
+var codecNames = map[stream.VideoCodec]string{stream.CodecH264: "H.264", stream.CodecHEVC: "HEVC", stream.CodecAV1: "AV1"}
+
+// encoderArgs returns the encoder options of rendition v: v's bitrate, a key
+// frame every gop frames starting a closed GOP, no B-frames, one thread.
+// Single-threaded encoders keep rate control deterministic, and the filters,
+// not the encoders, bound the wall time.
+func encoderArgs(v stream.Video, gop string) []string {
+	rate, buf := strconv.Itoa(v.BitrateKbps)+"k", strconv.Itoa(2*v.BitrateKbps)+"k"
+	switch v.Codec {
+	case stream.CodecHEVC:
+		args := []string{
+			"-c:v", "libx265", "-tag:v", "hvc1", "-profile:v", v.Profile, "-preset", "ultrafast",
+			"-b:v", rate, "-maxrate", rate, "-bufsize", buf,
+			// info=0 drops the SEI that repeats the encoder settings.
+			"-x265-params", "bframes=0:keyint=" + gop + ":min-keyint=" + gop +
+				":scenecut=0:open-gop=0:repeat-headers=0:info=0:pools=1:frame-threads=1:log-level=error",
+		}
+		if v.Profile == "main10" {
+			args = append(args, "-pix_fmt", "yuv420p10le")
+		}
+		return args
+	case stream.CodecAV1:
+		// rtc=1 is SVT-AV1's low-delay mode, the only one with CBR (rc=2): no
+		// hidden frames, no maxrate.
+		args := []string{
+			"-c:v", "libsvtav1", "-preset", "10", "-b:v", rate, "-bufsize", buf, "-g", gop,
+			"-svtav1-params", "keyint=" + gop + ":scd=0:rtc=1:rc=2:lp=1",
+		}
+		if v.BitDepth == 10 {
+			args = append(args, "-pix_fmt", "yuv420p10le")
+		}
+		return args
+	default:
+		return []string{
+			"-c:v", "libx264", "-threads", "1", "-profile:v", v.Profile, "-preset", "veryfast",
+			"-b:v", rate, "-maxrate", rate, "-bufsize", buf,
+			"-g", gop, "-keyint_min", gop, "-sc_threshold", "0", "-bf", "0", "-x264-params", "open-gop=0",
+		}
+	}
 }
 
 // clockText is the drawtext text for HH:MM:SS.FF at local time start + f/fps,

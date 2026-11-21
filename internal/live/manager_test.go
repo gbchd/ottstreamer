@@ -49,7 +49,7 @@ type fakeEncoder struct {
 func (e *fakeEncoder) StartEpoch(_ context.Context, s stream.Stream) (map[string]Track, error) {
 	tracks := make(map[string]Track)
 	for _, v := range s.Status.Epoch.Spec.Video {
-		tracks[v.ID] = Track{ID: v.ID, Video: true, Timescale: 90000, Init: []byte("init " + v.ID)}
+		tracks[v.ID] = Track{ID: v.ID, Video: true, Timescale: 90000, Codec: "avc1.64001f", Init: []byte("init " + v.ID)}
 	}
 	for _, a := range s.Status.Epoch.Spec.Audio {
 		loop := make([]Sample, 375)

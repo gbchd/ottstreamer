@@ -61,8 +61,11 @@ func (s *Spec) setDefaults() {
 		if v.Codec == "" {
 			v.Codec = CodecH264
 		}
-		if v.Profile == "" && v.Codec == CodecH264 {
-			v.Profile = DefaultProfile
+		if v.Profile == "" {
+			v.Profile = map[VideoCodec]string{CodecH264: DefaultProfile, CodecHEVC: "main", CodecAV1: "main"}[v.Codec]
+		}
+		if v.BitDepth == 0 && v.Codec == CodecAV1 {
+			v.BitDepth = 8
 		}
 	}
 	// Beep tones step up per language, in order of first appearance, so
@@ -245,12 +248,24 @@ func (s Spec) validateVideo(v *ValidationError, ids map[string]bool) {
 		switch r.Codec {
 		case CodecH264:
 			if !slices.Contains([]string{"baseline", "main", "high"}, r.Profile) {
-				v.add(path+".profile", `must be "baseline", "main" or "high"`)
+				v.add(path+".profile", `must be "baseline", "main" or "high" for h264`)
 			}
-		case CodecHEVC, CodecAV1:
-			v.add(path+".codec", string(r.Codec)+" is not supported yet")
+		case CodecHEVC:
+			if r.Profile != "main" && r.Profile != "main10" {
+				v.add(path+".profile", `must be "main" or "main10" for hevc`)
+			}
+		case CodecAV1:
+			if r.Profile != "main" {
+				v.add(path+".profile", `must be "main" for av1`)
+			}
+			if r.BitDepth != 8 && r.BitDepth != 10 {
+				v.add(path+".bitDepth", "must be 8 or 10")
+			}
 		default:
 			v.add(path+".codec", `must be "h264", "hevc" or "av1"`)
+		}
+		if r.BitDepth != 0 && r.Codec != CodecAV1 {
+			v.add(path+".bitDepth", "only applies to av1; hevc takes profile main10")
 		}
 		if r.Width <= 0 || r.Width%2 != 0 || r.Width > 1920 {
 			v.add(path+".width", "must be even and at most 1920")
@@ -296,8 +311,10 @@ func (s Spec) validateAudio(v *ValidationError, ids map[string]bool) {
 			minKbps, maxKbps = 32, 320
 		case CodecAC3:
 			minKbps, maxKbps = 192, 640
-		case CodecEAC3, CodecOpus:
-			v.add(path+".codec", string(a.Codec)+" is not supported yet")
+		case CodecEAC3:
+			minKbps, maxKbps = 96, 640
+		case CodecOpus:
+			minKbps, maxKbps = 32, 320
 		default:
 			v.add(path+".codec", `must be "aac", "ac3", "eac3" or "opus"`)
 		}

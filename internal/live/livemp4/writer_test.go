@@ -5,6 +5,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/Eyevinn/mp4ff/av1"
+	"github.com/Eyevinn/mp4ff/hevc"
 	"github.com/Eyevinn/mp4ff/mp4"
 
 	"ottstreamer/internal/adbreak"
@@ -20,6 +22,7 @@ func TestWriter_WriteSegment(t *testing.T) {
 	f := live.Fragment{
 		Seq:       8,
 		TrackID:   1,
+		Codec:     "avc1.640028",
 		BaseTime:  7 * 90000,
 		SampleDur: 3600,
 		Samples:   samples,
@@ -120,7 +123,7 @@ func TestFillerSizes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := fillerSizes(five, tt.padTo)
+			got := fillerSizes(five, tt.padTo, 6)
 			if !slices.Equal(got, tt.want) {
 				t.Errorf("fillerSizes(%d) = %v, want %v", tt.padTo, got, tt.want)
 			}
@@ -132,5 +135,64 @@ func TestFillerNAL(t *testing.T) {
 	got := fillerNAL(8)
 	if want := []byte{0, 0, 0, 4, 12, 0xFF, 0xFF, 0x80}; !bytes.Equal(got, want) {
 		t.Errorf("fillerNAL(8) = %x, want %x", got, want)
+	}
+}
+
+// TestWriter_WriteSegmentPadding checks every codec's segment reaches PadTo
+// exactly, and an unknown codec is not padded.
+func TestWriter_WriteSegmentPadding(t *testing.T) {
+	samples := []live.Sample{{Data: make([]byte, 40), Sync: true}, {Data: make([]byte, 20)}}
+	tests := []struct {
+		codec string
+		want  int
+	}{
+		{"avc1.640028", 1000},
+		{"hvc1.1.6.L93.90", 1000},
+		{"av01.0.08M.08", 1000},
+		{"vp09.00.10.08", 60},
+	}
+	for _, tt := range tests {
+		var buf bytes.Buffer
+		f := live.Fragment{Seq: 1, TrackID: 1, Codec: tt.codec, SampleDur: 3600, Samples: samples, PadTo: 1000}
+		if err := NewWriter().WriteSegment(&buf, f); err != nil {
+			t.Fatal(err)
+		}
+		file, err := mp4.DecodeFile(bytes.NewReader(buf.Bytes()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(file.Segments[0].Fragments[0].Mdat.Data); got != tt.want {
+			t.Errorf("%s: mdat %d bytes, want %d", tt.codec, got, tt.want)
+		}
+	}
+}
+
+func TestFillerHEVC(t *testing.T) {
+	got := fillerHEVC(9)
+	if want := []byte{0, 0, 0, 5, 0x4C, 0x01, 0xFF, 0xFF, 0x80}; !bytes.Equal(got, want) {
+		t.Errorf("fillerHEVC(9) = %x, want %x", got, want)
+	}
+	if typ := hevc.GetNaluType(got[4]); typ != 38 || len(fillerHEVC(fillers["hvc1"].min)) != 7 {
+		t.Errorf("NAL type %d, want 38 (FD_NUT)", typ)
+	}
+}
+
+func TestPaddingOBU(t *testing.T) {
+	if got, want := paddingOBU(4), []byte{0x7A, 2, 0, 0x80}; !bytes.Equal(got, want) {
+		t.Errorf("paddingOBU(4) = %x, want %x", got, want)
+	}
+	for _, n := range []int{2, 3, 129, 130, 131, 5000} {
+		b := paddingOBU(n)
+		obus, err := av1.SplitOBUs(b)
+		if err != nil {
+			t.Fatalf("paddingOBU(%d): %v", n, err)
+		}
+		if len(b) != n || len(obus) != 1 || obus[0].Header.Type != av1.OBUPadding {
+			t.Fatalf("paddingOBU(%d): %d bytes, %d OBUs", n, len(b), len(obus))
+		}
+		// Trailing bits: a non-empty payload ends with a 1 bit then zeros.
+		if p := obus[0].Payload; len(p) > 0 && p[len(p)-1] != 0x80 {
+			t.Errorf("paddingOBU(%d): last byte %x, want 80", n, p[len(p)-1])
+		}
 	}
 }

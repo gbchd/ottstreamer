@@ -66,8 +66,8 @@ func TestManager_WriteSegment_video(t *testing.T) {
 		t.Fatalf("wrote %q", out.String())
 	}
 	f := h.w.last()
-	if f.Seq != 4 || f.TrackID != 1 || f.BaseTime != 3*180000 || f.SampleDur != 3600 {
-		t.Fatalf("fragment = seq %d track %d tfdt %d dur %d", f.Seq, f.TrackID, f.BaseTime, f.SampleDur)
+	if f.Seq != 4 || f.TrackID != 1 || f.BaseTime != 3*180000 || f.SampleDur != 3600 || f.Codec != "avc1.64001f" {
+		t.Fatalf("fragment = seq %d track %d tfdt %d dur %d codec %q", f.Seq, f.TrackID, f.BaseTime, f.SampleDur, f.Codec)
 	}
 	if len(f.Samples) != 50 || !f.Samples[0].Sync {
 		t.Fatalf("%d samples, first sync %t; want 50, true", len(f.Samples), f.Samples[0].Sync)

@@ -17,13 +17,15 @@ const (
 )
 
 // priming is the encoder delay in samples, the edit list media_time ffmpeg
-// writes. The PCM is advanced by it so that output frame k plays pattern
-// time k*FrameSize.
-var priming = map[stream.AudioCodec]int{stream.CodecAAC: 1024, stream.CodecAC3: 256}
+// writes (for Opus also dOps's pre-skip). The PCM is advanced by it so that
+// output frame k plays pattern time k*FrameSize.
+var priming = map[stream.AudioCodec]int{stream.CodecAAC: 1024, stream.CodecAC3: 256, stream.CodecEAC3: 256, stream.CodecOpus: 312}
 
 var layouts = map[int]string{1: "mono", 2: "stereo", 6: "5.1"}
 
-var audioEncoders = map[stream.AudioCodec]string{stream.CodecAAC: "aac", stream.CodecAC3: "ac3"}
+var audioEncoders = map[stream.AudioCodec]string{
+	stream.CodecAAC: "aac", stream.CodecAC3: "ac3", stream.CodecEAC3: "eac3", stream.CodecOpus: "libopus",
+}
 
 // buildAudioArgs returns the ffmpeg arguments that encode audioSeconds of
 // beeps for a into the fragmented MP4 out.

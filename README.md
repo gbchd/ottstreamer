@@ -5,7 +5,7 @@ A synthetic live OTT origin: it encodes a test picture (clock, frame counter, be
 ## Prerequisites
 
 - Go 1.27
-- ffmpeg and ffprobe, with libx264 and the drawtext filter (`ffmpeg -filters | grep drawtext`)
+- ffmpeg and ffprobe, with libx264 and the drawtext filter (`ffmpeg -filters | grep drawtext`); libx265, libsvtav1 and libopus for HEVC, AV1 and Opus renditions (`ffmpeg -encoders`). A start whose codecs the local ffmpeg lacks answers 422 naming the encoder.
 
 ## Run locally
 

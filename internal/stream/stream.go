@@ -23,8 +23,8 @@ type VideoCodec string
 
 const (
 	CodecH264 VideoCodec = "h264"
-	CodecHEVC VideoCodec = "hevc" // refused for now
-	CodecAV1  VideoCodec = "av1"  // refused for now
+	CodecHEVC VideoCodec = "hevc"
+	CodecAV1  VideoCodec = "av1"
 )
 
 // AudioCodec is an audio rendition's codec.
@@ -33,8 +33,8 @@ type AudioCodec string
 const (
 	CodecAAC  AudioCodec = "aac"
 	CodecAC3  AudioCodec = "ac3"
-	CodecEAC3 AudioCodec = "eac3" // refused for now
-	CodecOpus AudioCodec = "opus" // refused for now
+	CodecEAC3 AudioCodec = "eac3"
+	CodecOpus AudioCodec = "opus"
 )
 
 // FrameSize is the number of 48 kHz samples per audio frame, 0 if unknown.
@@ -80,7 +80,8 @@ const (
 type Video struct {
 	ID          string
 	Codec       VideoCodec
-	Profile     string
+	Profile     string // h264: baseline, main, high; hevc: main, main10; av1: main
+	BitDepth    int    // av1 only: 8 or 10
 	Width       int
 	Height      int
 	BitrateKbps int

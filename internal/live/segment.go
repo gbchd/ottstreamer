@@ -47,7 +47,7 @@ func (m *Manager) WriteSegment(ctx context.Context, w io.Writer, streamID, rendi
 
 func (m *Manager) fragment(ctx context.Context, rt *Runtime, t Track, n int64) (Fragment, error) {
 	tl := rt.Timeline()
-	f := Fragment{Seq: uint32(n + 1), TrackID: 1} //nolint:gosec // mfhd sequence_number is 32-bit and wraps
+	f := Fragment{Seq: uint32(n + 1), TrackID: 1, Codec: t.Codec} //nolint:gosec // mfhd sequence_number is 32-bit and wraps
 	if !t.Video {
 		first, end := tl.AudioFrameRange(n, t.FrameSize)
 		f.Samples = make([]Sample, 0, end-first)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"os"
@@ -20,6 +21,7 @@ import (
 
 	"ottstreamer/internal/live"
 	"ottstreamer/internal/live/livemp4"
+	"ottstreamer/internal/stream"
 )
 
 var discardLogger = slog.New(slog.DiscardHandler)
@@ -53,8 +55,8 @@ func TestEncoder_StartEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tracks) != 4 {
-		t.Fatalf("got %d tracks, want 4", len(tracks))
+	if len(tracks) != 6 {
+		t.Fatalf("got %d tracks, want 6", len(tracks))
 	}
 	avc1 := regexp.MustCompile(`^avc1\.[0-9A-F]{6}$`)
 	for _, v := range s.Spec.Video {
@@ -78,6 +80,8 @@ func TestEncoder_StartEpoch(t *testing.T) {
 	}{
 		{"en", "mp4a.40.2", 1024, 375, 2},
 		{"en-51", "ac-3", 1536, 250, 6},
+		{"en-ec3", "ec-3", 1536, 250, 6},
+		{"en-opus", "opus", 960, 400, 2},
 	}
 	for _, tt := range tests {
 		tr := tracks[tt.id]
@@ -93,6 +97,13 @@ func TestEncoder_StartEpoch(t *testing.T) {
 			channels = int(stsd.Mp4a.ChannelCount)
 		case stsd.AC3 != nil:
 			channels, _ = stsd.AC3.Dac3.ChannelInfo()
+		case stsd.EC3 != nil:
+			channels, _ = stsd.EC3.Dec3.ChannelInfo()
+		case stsd.Opus != nil && stsd.Opus.Dops != nil:
+			channels = int(stsd.Opus.Dops.OutputChannelCount)
+			if stsd.Opus.Dops.PreSkip != 0 {
+				t.Errorf("%s: dOps pre-skip %d, want 0", tt.id, stsd.Opus.Dops.PreSkip)
+			}
 		}
 		if channels != tt.channels || init.Moov.Trak.Mdia.Mdhd.Timescale != 48000 {
 			t.Errorf("%s: %d channels at %d Hz, want %d at 48000", tt.id, channels, init.Moov.Trak.Mdia.Mdhd.Timescale, tt.channels)
@@ -223,7 +234,7 @@ func TestEncoder_EncodeSegment(t *testing.T) {
 	var buf bytes.Buffer
 	buf.Write(tracks[v.ID].Init)
 	err = livemp4.NewWriter().WriteSegment(&buf, live.Fragment{
-		Seq: 8, TrackID: 1, BaseTime: uint64(tl.VideoTfdt(7)), SampleDur: 3600, Samples: a[v.ID], PadTo: padTo,
+		Seq: 8, TrackID: 1, Codec: tracks[v.ID].Codec, BaseTime: uint64(tl.VideoTfdt(7)), SampleDur: 3600, Samples: a[v.ID], PadTo: padTo,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -243,6 +254,116 @@ func TestEncoder_EncodeSegment(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(out)); got != "7.000000,25" {
 		t.Errorf("ffprobe start_time,frames = %q, want 7.000000,25", got)
+	}
+}
+
+// TestEncoder_codecs encodes a ladder of every video codec and checks the
+// init segments, key frames at every GOP start, determinism, and that
+// padding keeps the decoded frames.
+func TestEncoder_codecs(t *testing.T) {
+	e := newEncoder(t)
+	s := newStream(t, 2*time.Second, []stream.Video{
+		{ID: "h264", Width: 320, Height: 180, BitrateKbps: 400},
+		{ID: "hevc", Codec: stream.CodecHEVC, Width: 320, Height: 180, BitrateKbps: 400},
+		{ID: "hevc-10", Codec: stream.CodecHEVC, Profile: "main10", Width: 160, Height: 90, BitrateKbps: 150},
+		{ID: "av1", Codec: stream.CodecAV1, Width: 320, Height: 180, BitrateKbps: 400},
+		{ID: "av1-10", Codec: stream.CodecAV1, BitDepth: 10, Width: 160, Height: 90, BitrateKbps: 150},
+	})
+	tracks, err := e.StartEpoch(t.Context(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wants := map[string]struct {
+		codec *regexp.Regexp
+		entry string
+	}{
+		"h264":    {regexp.MustCompile(`^avc1\.64[0-9A-F]{4}$`), "avc1"},
+		"hevc":    {regexp.MustCompile(`^hvc1\.1\.6\.L\d+\.[0-9A-F]+$`), "hvc1"}, // Main
+		"hevc-10": {regexp.MustCompile(`^hvc1\.2\.4\.L\d+\.[0-9A-F]+$`), "hvc1"}, // Main 10
+		"av1":     {regexp.MustCompile(`^av01\.0\.\d\dM\.08$`), "av01"},
+		"av1-10":  {regexp.MustCompile(`^av01\.0\.\d\dM\.10$`), "av01"},
+	}
+	stsds := map[string]*mp4.StsdBox{}
+	for _, v := range s.Spec.Video {
+		tr, want := tracks[v.ID], wants[v.ID]
+		stsd := parseInit(t, tr.Init).Moov.Trak.Mdia.Minf.Stbl.Stsd
+		stsds[v.ID] = stsd
+		if len(stsd.Children) != 1 || stsd.Children[0].Type() != want.entry || !want.codec.MatchString(tr.Codec) {
+			t.Errorf("%s: sample entry %s, codec %q; want %s, %s", v.ID, stsd.Children[0].Type(), tr.Codec, want.entry, want.codec)
+		}
+	}
+
+	const n = 3
+	start := time.Now()
+	a, err := e.EncodeSegment(t.Context(), s, n, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("segment %d of 5 renditions: %v", n, time.Since(start))
+	for id, ss := range a {
+		if len(ss) != 50 {
+			t.Fatalf("%s: %d samples, want 50", id, len(ss))
+		}
+		for i, smp := range ss {
+			if gopStart := i%25 == 0; smp.Sync != gopStart || keyFrame(stsds[id], smp.Data) != gopStart {
+				t.Errorf("%s sample %d: sync %v, key frame %v", id, i, smp.Sync, keyFrame(stsds[id], smp.Data))
+			}
+		}
+	}
+
+	// Determinism: the same segment twice gives the same bytes, with every
+	// encoder single-threaded (also verified at 1080p on x265 4.3 and SVT-AV1 4.3).
+	b, err := e.EncodeSegment(t.Context(), s, n, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id := range a {
+		if !slices.EqualFunc(a[id], b[id], func(x, y live.Sample) bool { return bytes.Equal(x.Data, y.Data) }) {
+			t.Errorf("%s differs between runs", id)
+		}
+	}
+
+	// Padding: within 1 % of bitrate × duration, decoding to the same frames.
+	tl := s.Status.Epoch.Timeline()
+	dir := t.TempDir()
+	for _, v := range s.Spec.Video {
+		padTo := v.BitrateKbps * 1000 / 8 * 2 // 2 s
+		var md5s [2]string
+		for i, pad := range []int{0, padTo} {
+			var buf bytes.Buffer
+			buf.Write(tracks[v.ID].Init)
+			err := livemp4.NewWriter().WriteSegment(&buf, live.Fragment{
+				Seq: n + 1, TrackID: 1, Codec: tracks[v.ID].Codec, BaseTime: uint64(tl.VideoTfdt(n)), SampleDur: 3600, Samples: a[v.ID], PadTo: pad,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The mdat payload is what PadTo counts; moof adds about 500 bytes.
+			if pad > 0 {
+				f, err := mp4.DecodeFile(bytes.NewReader(buf.Bytes()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if size := len(f.Segments[0].Fragments[0].Mdat.Data); math.Abs(float64(size-padTo)) > 0.01*float64(padTo) {
+					t.Errorf("%s: padded mdat is %d bytes, want %d ± 1 %%", v.ID, size, padTo)
+				}
+			}
+			path := filepath.Join(dir, fmt.Sprintf("%s-%d.mp4", v.ID, pad))
+			if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var stderr bytes.Buffer
+			cmd := exec.CommandContext(t.Context(), "ffmpeg", "-v", "warning", "-i", path, "-f", "framemd5", "-")
+			cmd.Stderr = &stderr
+			out, err := cmd.Output()
+			if err != nil || stderr.Len() > 0 {
+				t.Fatalf("%s: decode: %v: %s", v.ID, err, stderr.Bytes())
+			}
+			md5s[i] = string(out)
+		}
+		if md5s[0] != md5s[1] || strings.Count(md5s[0], "\n0, ") != 50 {
+			t.Errorf("%s: padded and unpadded segments decode to different frames:\n%s\n%s", v.ID, md5s[0], md5s[1])
+		}
 	}
 }
 
@@ -276,6 +397,24 @@ func BenchmarkEncoder_EncodeSegment(b *testing.B) {
 	for b.Loop() {
 		if _, err := e.EncodeSegment(b.Context(), s, 7, false); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkEncoder_EncodeSegmentCodec times one 2 s segment of a single
+// rendition per codec and size.
+func BenchmarkEncoder_EncodeSegmentCodec(b *testing.B) {
+	e := newEncoder(b)
+	for _, size := range [][2]int{{320, 180}, {1920, 1080}} {
+		for _, c := range []stream.VideoCodec{stream.CodecH264, stream.CodecHEVC, stream.CodecAV1} {
+			b.Run(fmt.Sprintf("%s/%dx%d", c, size[0], size[1]), func(b *testing.B) {
+				s := newStream(b, 2*time.Second, []stream.Video{{ID: "v", Codec: c, Width: size[0], Height: size[1], BitrateKbps: 5000}})
+				for b.Loop() {
+					if _, err := e.EncodeSegment(b.Context(), s, 7, false); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
 		}
 	}
 }
@@ -320,6 +459,55 @@ func TestEncoder_Check(t *testing.T) {
 				t.Fatalf("Check = %v, want %q", err, tt.want)
 			}
 		})
+	}
+}
+
+// encodersScript is a fake ffmpeg that lists libx264, libx265 and aac.
+const encodersScript = `case "$2" in
+-version) echo "ffmpeg version 9.0.2"; echo "configuration: --enable-libx264";;
+-encoders) printf 'Encoders:\n V..... = Video\n ------\n V....D libx264    libx264 H.264\n V....D libx265    libx265 H.265 / HEVC\n A....D aac        AAC (Advanced Audio Coding)\n';;
+*) exit 1;;
+esac`
+
+func TestEncoder_StartEpochMissingEncoder(t *testing.T) {
+	m := &recordMetrics{}
+	e := fakeFFmpeg(t, encodersScript, m)
+	s := newStream(t, time.Second, []stream.Video{
+		{ID: "h264", Width: 320, Height: 180, BitrateKbps: 400},
+		{ID: "av1", Codec: stream.CodecAV1, Width: 320, Height: 180, BitrateKbps: 300},
+		{ID: "hevc", Codec: stream.CodecHEVC, Width: 320, Height: 180, BitrateKbps: 300},
+	}, stream.Audio{ID: "en", Lang: "en", Channels: 2, BitrateKbps: 128, Default: true},
+		stream.Audio{ID: "en-opus", Lang: "en", Channels: 2, BitrateKbps: 96, Codec: stream.CodecOpus})
+	_, err := e.StartEpoch(t.Context(), s)
+	verr, ok := errors.AsType[*stream.ValidationError](err)
+	if !ok {
+		t.Fatalf("StartEpoch = %v, want a *stream.ValidationError", err)
+	}
+	want := []stream.FieldError{
+		{Field: "spec.video[0].codec", Message: "libsvtav1 is missing from the local ffmpeg"},
+		{Field: "spec.audio[1].codec", Message: "libopus is missing from the local ffmpeg"},
+	}
+	if !slices.Equal(verr.Fields, want) {
+		t.Errorf("fields = %v, want %v", verr.Fields, want)
+	}
+	if len(m.started) != 0 || len(e.used) != 0 {
+		t.Errorf("ran ffmpeg %d times, recorded %v as used; want none", len(m.started), e.used)
+	}
+}
+
+func TestEncoder_CheckUsedEncoders(t *testing.T) {
+	e := fakeFFmpeg(t, encodersScript, nopMetrics{})
+	s := newStream(t, time.Second, []stream.Video{{ID: "hevc", Codec: stream.CodecHEVC, Width: 320, Height: 180, BitrateKbps: 300}})
+	// The encoders pass; the fake ffmpeg then fails the encode itself.
+	if _, err := e.StartEpoch(t.Context(), s); err == nil || errors.Is(err, stream.ErrInvalid) {
+		t.Fatalf("StartEpoch = %v, want an ffmpeg failure", err)
+	}
+	if _, err := e.Check(t.Context(), ""); err != nil {
+		t.Fatalf("Check = %v", err)
+	}
+	e.used["libsvtav1"] = true // as if the local build lost it since
+	if _, err := e.Check(t.Context(), ""); err == nil || !strings.Contains(err.Error(), "lacks libsvtav1") {
+		t.Fatalf("Check = %v, want lacks libsvtav1", err)
 	}
 }
 

@@ -126,6 +126,30 @@ func (e AudioChannels) Valid() bool {
 	}
 }
 
+// Defines values for AudioCodec.
+const (
+	Aac  AudioCodec = "aac"
+	Ac3  AudioCodec = "ac3"
+	Eac3 AudioCodec = "eac3"
+	Opus AudioCodec = "opus"
+)
+
+// Valid indicates whether the value is a known member of the AudioCodec enum.
+func (e AudioCodec) Valid() bool {
+	switch e {
+	case Aac:
+		return true
+	case Ac3:
+		return true
+	case Eac3:
+		return true
+	case Opus:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DASHAddressing.
 const (
 	Number         DASHAddressing = "number"
@@ -288,6 +312,45 @@ func (e State) Valid() bool {
 	}
 }
 
+// Defines values for VideoBitDepth.
+const (
+	N10 VideoBitDepth = 10
+	N8  VideoBitDepth = 8
+)
+
+// Valid indicates whether the value is a known member of the VideoBitDepth enum.
+func (e VideoBitDepth) Valid() bool {
+	switch e {
+	case N10:
+		return true
+	case N8:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for VideoCodec.
+const (
+	Av1  VideoCodec = "av1"
+	H264 VideoCodec = "h264"
+	Hevc VideoCodec = "hevc"
+)
+
+// Valid indicates whether the value is a known member of the VideoCodec enum.
+func (e VideoCodec) Valid() bool {
+	switch e {
+	case Av1:
+		return true
+	case H264:
+		return true
+	case Hevc:
+		return true
+	default:
+		return false
+	}
+}
+
 // Ads defines model for Ads.
 type Ads struct {
 	Command AdsCommand `json:"command,omitempty"`
@@ -324,9 +387,9 @@ type Audio struct {
 	BitrateKbps int           `json:"bitrateKbps"`
 	Channels    AudioChannels `json:"channels"`
 
-	// Codec aac (default) or ac3; eac3 and opus are not supported yet
-	Codec   string `json:"codec,omitempty"`
-	Default bool   `json:"default,omitempty"`
+	// Codec Default aac
+	Codec   AudioCodec `json:"codec,omitempty"`
+	Default bool       `json:"default,omitempty"`
 
 	// Group Bitrate tier; default main
 	Group string `json:"group,omitempty"`
@@ -345,6 +408,9 @@ type Audio struct {
 
 // AudioChannels defines model for Audio.Channels.
 type AudioChannels int
+
+// AudioCodec Default aac
+type AudioCodec string
 
 // Break defines model for Break.
 type Break struct {
@@ -669,17 +735,25 @@ type Timeline struct {
 
 // Video defines model for Video.
 type Video struct {
-	BitrateKbps int `json:"bitrateKbps"`
+	// BitDepth av1 only; default 8
+	BitDepth    VideoBitDepth `json:"bitDepth,omitempty"`
+	BitrateKbps int           `json:"bitrateKbps"`
 
-	// Codec h264 (default); hevc and av1 are not supported yet
-	Codec  string `json:"codec,omitempty"`
-	Height int    `json:"height"`
-	Id     string `json:"id"`
+	// Codec Default h264
+	Codec  VideoCodec `json:"codec,omitempty"`
+	Height int        `json:"height"`
+	Id     string     `json:"id"`
 
-	// Profile baseline, main or high (default)
+	// Profile h264: baseline, main or high (default); hevc: main (default) or main10; av1: main
 	Profile string `json:"profile,omitempty"`
 	Width   int    `json:"width"`
 }
+
+// VideoBitDepth av1 only; default 8
+type VideoBitDepth int
+
+// VideoCodec Default h264
+type VideoCodec string
 
 // Window defines model for Window.
 type Window struct {
