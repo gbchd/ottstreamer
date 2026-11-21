@@ -71,7 +71,12 @@ func (h *Handler) mediaPlaylist(r *http.Request, req request) ([]byte, error) {
 	tl := req.tl
 	fmt.Fprintf(&b, "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:%d\n#EXT-X-MEDIA-SEQUENCE:%d\n",
 		(tl.SegFrames+int64(tl.FPS)-1)/int64(tl.FPS), first)
-	fmt.Fprintf(&b, "#EXT-X-MAP:URI=\"%s\"\n", req.url(rendition+"/init.mp4"))
+	ext := "m4s"
+	if t.Codec == live.CodecWebVTT {
+		ext = "vtt" // plain WebVTT, no init segment
+	} else {
+		fmt.Fprintf(&b, "#EXT-X-MAP:URI=\"%s\"\n", req.url(rendition+"/init.mp4"))
+	}
 	cw := cueWriter{b: &b, styles: styles, tl: tl, command: req.spec.Ads.Command}
 	for n := first; n <= last; n++ {
 		// Sorted by start, so a break ending at n closes before the next opens.
@@ -90,7 +95,7 @@ func (h *Handler) mediaPlaylist(r *http.Request, req request) ([]byte, error) {
 		if fault.Gap(req.rules, fault.Target{StreamID: req.id, Epoch: req.epoch, Kind: fault.KindSegment, Rendition: rendition, Segment: n}) {
 			b.WriteString("#EXT-X-GAP\n")
 		}
-		b.WriteString(req.url(fmt.Sprintf("%s/%d.m4s", rendition, n)) + "\n")
+		b.WriteString(req.url(fmt.Sprintf("%s/%d.%s", rendition, n, ext)) + "\n")
 	}
 	if tl.EndSeg >= 0 && last == tl.EndSeg {
 		// A stop cuts an active break at the end segment: its cue-in segment
@@ -105,9 +110,22 @@ func (h *Handler) mediaPlaylist(r *http.Request, req request) ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
+// webVTT returns a WebVTT segment of cues starting at media time start.
+// Cue times are media time; X-TIMESTAMP-MAP ties them to the video's 90 kHz
+// media time, which the fMP4 tfdt carries. Cue text comes from validated
+// language tags and digits, so it needs no escaping.
+func webVTT(start int64, cues []live.Cue) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:%d,LOCAL:%s\n", start%(1<<33), live.Timestamp(start))
+	for _, c := range cues {
+		fmt.Fprintf(&b, "\n%s --> %s\n%s\n", live.Timestamp(c.Start), live.Timestamp(c.End), c.Text)
+	}
+	return b.String()
+}
+
 // segTiming returns the real start and duration of segment n of track t.
 func segTiming(tl timeline.Timeline, t live.Track, n int64) (time.Time, time.Duration) {
-	if t.Video {
+	if t.Kind != live.KindAudio {
 		return tl.SegStart(n), tl.SegDuration()
 	}
 	first, end := tl.AudioFrameRange(n, t.FrameSize)
@@ -233,22 +251,33 @@ func (*Handler) multivariant(_ *http.Request, req request) ([]byte, error) {
 		if t, ok := req.rt.Track(a.ID); ok && !slices.Contains(codecs[a.Group], t.Codec) {
 			codecs[a.Group] = append(codecs[a.Group], t.Codec)
 		}
-		def := "NO"
-		if a.Default {
-			def = "YES"
-		}
 		fmt.Fprintf(&b, "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"%s\",LANGUAGE=\"%s\",NAME=\"%s\",CHANNELS=\"%d\",DEFAULT=%s,AUTOSELECT=YES,URI=\"%s\"\n",
-			a.Group, a.Lang, cmp.Or(a.Name, a.ID), a.Channels, def, req.url(a.ID+".m3u8"))
+			a.Group, a.Lang, cmp.Or(a.Name, a.ID), a.Channels, yesNo(a.Default), req.url(a.ID+".m3u8"))
+	}
+	// Every variant offers every subtitle track; IMSC1 tracks put their
+	// codec in each variant's CODECS, as the HLS authoring spec asks.
+	var subs, textCodec string
+	for _, s := range req.spec.Subtitles {
+		subs = `,SUBTITLES="subs"`
+		if s.Format == stream.SubtitleIMSC1 {
+			textCodec = live.CodecIMSC1
+		}
+		fmt.Fprintf(&b, "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",LANGUAGE=\"%s\",NAME=\"%s\",DEFAULT=%s,AUTOSELECT=YES,FORCED=NO,URI=\"%s\"\n",
+			s.Lang, cmp.Or(s.Name, s.ID), yesNo(s.Default), req.url(s.ID+".m3u8"))
 	}
 	variants := make([]variant, 0, len(req.spec.Video)*len(groups))
 	for _, v := range req.spec.Video {
 		t, _ := req.rt.Track(v.ID)
 		for _, g := range groups {
+			all := append([]string{t.Codec}, codecs[g]...)
+			if textCodec != "" {
+				all = append(all, textCodec)
+			}
 			variants = append(variants, variant{
 				video:     v,
 				group:     g,
 				bandwidth: v.BitrateKbps*1000 + maxAudio[g],
-				codecs:    strings.Join(append([]string{t.Codec}, codecs[g]...), ","),
+				codecs:    strings.Join(all, ","),
 			})
 		}
 	}
@@ -261,8 +290,15 @@ func (*Handler) multivariant(_ *http.Request, req request) ([]byte, error) {
 		return cmp.Or(cmp.Compare(rank(x), rank(y)), cmp.Compare(y.bandwidth, x.bandwidth))
 	})
 	for _, v := range variants {
-		fmt.Fprintf(&b, "#EXT-X-STREAM-INF:BANDWIDTH=%d,AVERAGE-BANDWIDTH=%d,CODECS=\"%s\",RESOLUTION=%dx%d,FRAME-RATE=%.3f,AUDIO=\"%s\"\n%s\n",
-			v.bandwidth*11/10, v.bandwidth, v.codecs, v.video.Width, v.video.Height, float64(req.spec.FPS), v.group, req.url(v.video.ID+".m3u8"))
+		fmt.Fprintf(&b, "#EXT-X-STREAM-INF:BANDWIDTH=%d,AVERAGE-BANDWIDTH=%d,CODECS=\"%s\",RESOLUTION=%dx%d,FRAME-RATE=%.3f,AUDIO=\"%s\"%s\n%s\n",
+			v.bandwidth*11/10, v.bandwidth, v.codecs, v.video.Width, v.video.Height, float64(req.spec.FPS), v.group, subs, req.url(v.video.ID+".m3u8"))
 	}
 	return []byte(b.String()), nil
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "YES"
+	}
+	return "NO"
 }

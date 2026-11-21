@@ -61,8 +61,8 @@ func TestEncoder_StartEpoch(t *testing.T) {
 	avc1 := regexp.MustCompile(`^avc1\.[0-9A-F]{6}$`)
 	for _, v := range s.Spec.Video {
 		tr := tracks[v.ID]
-		if !tr.Video || tr.Timescale != 90000 || !avc1.MatchString(tr.Codec) {
-			t.Errorf("%s: video %v, timescale %d, codec %q", v.ID, tr.Video, tr.Timescale, tr.Codec)
+		if tr.Kind != live.KindVideo || tr.Timescale != 90000 || !avc1.MatchString(tr.Codec) {
+			t.Errorf("%s: kind %s, timescale %d, codec %q", v.ID, tr.Kind, tr.Timescale, tr.Codec)
 		}
 		init := parseInit(t, tr.Init)
 		trak := init.Moov.Trak
@@ -85,7 +85,7 @@ func TestEncoder_StartEpoch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		tr := tracks[tt.id]
-		if tr.Video || tr.Codec != tt.codec || tr.Timescale != 48000 || tr.FrameSize != tt.frameSize || len(tr.Loop) != tt.loop {
+		if tr.Kind != live.KindAudio || tr.Codec != tt.codec || tr.Timescale != 48000 || tr.FrameSize != tt.frameSize || len(tr.Loop) != tt.loop {
 			t.Errorf("%s: codec %q, timescale %d, frame size %d, loop %d frames; want %s, 48000, %d, %d",
 				tt.id, tr.Codec, tr.Timescale, tr.FrameSize, len(tr.Loop), tt.codec, tt.frameSize, tt.loop)
 		}

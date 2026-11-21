@@ -81,6 +81,26 @@
       </SegmentTemplate>
       <Representation id="en-51" codecs="ac-3" audioSamplingRate="48000" bandwidth="384000"></Representation>
     </AdaptationSet>
+    <AdaptationSet id="4" contentType="text" mimeType="application/mp4" lang="en" segmentAlignment="true">
+      <Label>English</Label>
+      <Role schemeIdUri="urn:mpeg:dash:role:2011" value="subtitle"></Role>
+      <SegmentTemplate timescale="90000" startNumber="485" media="$RepresentationID$/$Number$.m4s?addressing=timeline-number" initialization="$RepresentationID$/init.mp4?addressing=timeline-number">
+        <SegmentTimeline>
+          <S t="87300000" d="180000" r="14"></S>
+        </SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="sub-en" codecs="wvtt" bandwidth="4000"></Representation>
+    </AdaptationSet>
+    <AdaptationSet id="5" contentType="text" mimeType="application/mp4" lang="fr" segmentAlignment="true">
+      <Label>Français</Label>
+      <Role schemeIdUri="urn:mpeg:dash:role:2011" value="subtitle"></Role>
+      <SegmentTemplate timescale="90000" startNumber="485" media="$RepresentationID$/$Number$.m4s?addressing=timeline-number" initialization="$RepresentationID$/init.mp4?addressing=timeline-number">
+        <SegmentTimeline>
+          <S t="87300000" d="180000" r="14"></S>
+        </SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="sub-fr" codecs="stpp.ttml.im1t" bandwidth="4000"></Representation>
+    </AdaptationSet>
   </Period>
   <UTCTiming schemeIdUri="urn:mpeg:dash:utc:http-iso:2014" value="//origin.test/api/time?stream=demo"></UTCTiming>
 </MPD>

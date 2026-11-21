@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Eyevinn/mp4ff/mp4"
 
 	"ottstreamer/internal/adbreak"
 	"ottstreamer/internal/adbreak/adbreakmem"
@@ -187,6 +190,10 @@ const e2eStream = `{"id": "e2e", "name": "End to end", "spec": {
     {"id": "en", "lang": "en", "name": "English", "channels": 2, "bitrateKbps": 96, "default": true},
     {"id": "en-51", "lang": "en", "name": "English 5.1", "channels": 6, "bitrateKbps": 192, "codec": "ac3"}
   ],
+  "subtitles": [
+    {"id": "sub-en", "lang": "en", "name": "English", "format": "webvtt", "default": true},
+    {"id": "sub-fr", "lang": "fr", "name": "Français", "format": "imsc1"}
+  ],
   "ads": {"leadSeconds": 2, "hls": ["daterange", "cueout"], "dash": ["eventstream-bin", "inband"]},
   "window": {"dvrSeconds": 10, "retainSeconds": 60}
 }}`
@@ -213,11 +220,12 @@ func TestEndToEnd(t *testing.T) {
 	e.clock.set(t0.Add(16 * time.Second))
 	master := string(e.live("master.m3u8"))
 	av1, hevc, avc := strings.Index(master, `CODECS="av01.`), strings.Index(master, `CODECS="hvc1.`), strings.Index(master, `CODECS="avc1.`)
-	if av1 < 0 || hevc < av1 || avc < hevc || !strings.Contains(master, `,mp4a.40.2,ac-3"`) {
+	if av1 < 0 || hevc < av1 || avc < hevc || !strings.Contains(master, `,mp4a.40.2,ac-3,stpp.ttml.im1t",`) ||
+		!strings.Contains(master, `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",LANGUAGE="fr"`) || strings.Count(master, `SUBTITLES="subs"`) != 4 {
 		t.Errorf("master:\n%s", master)
 	}
 	var cues string
-	for _, r := range []string{"180p", "144p", "144p-hevc", "144p-av1", "en", "en-51"} {
+	for _, r := range []string{"180p", "144p", "144p-hevc", "144p-av1", "en", "en-51", "sub-en", "sub-fr"} {
 		pl := string(e.live(r + ".m3u8"))
 		for _, tag := range []string{`#EXT-X-DATERANGE:ID="1",START-DATE="2026-11-06T18:00:10.000Z",PLANNED-DURATION=3.000,SCTE35-OUT=0xFC30`,
 			"#EXT-X-CUE-OUT:DURATION=3", "#EXT-X-CUE-OUT-CONT:ElapsedTime=1,Duration=3", `END-DATE="2026-11-06T18:00:13.000Z",SCTE35-IN=0xFC30`, "#EXT-X-CUE-IN"} {
@@ -239,7 +247,8 @@ func TestEndToEnd(t *testing.T) {
 	}
 	mpd := string(e.live("manifest.mpd"))
 	for _, want := range []string{`<InbandEventStream schemeIdUri="urn:scte:scte35:2013:bin"`, `<Event id="1" presentationTime="900000" duration="270000">`, `/api/time?stream=e2e"`,
-		`<SupplementalProperty schemeIdUri="urn:mpeg:dash:adaptation-set-switching:2016" value="2,3">`} {
+		`<SupplementalProperty schemeIdUri="urn:mpeg:dash:adaptation-set-switching:2016" value="2,3">`,
+		`<Representation id="sub-en" codecs="wvtt"`, `<Representation id="sub-fr" codecs="stpp.ttml.im1t"`} {
 		if !strings.Contains(mpd, want) {
 			t.Errorf("MPD lacks %s:\n%s", want, mpd)
 		}
@@ -287,6 +296,7 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 
+	e.checkSubtitles()
 	e.checkFaults()
 
 	// Stop: the end segment is the frozen horizon, 17.
@@ -384,6 +394,39 @@ func (e *e2e) checkEvents() {
 	}
 	if log := e.do(http.MethodGet, "/api/streams/e2e/events?types=stream.deleted", "", http.StatusOK); !bytes.Contains(log, []byte(`"actor":"api:e2e"`)) {
 		t.Errorf("no stream.deleted after delete: %s", log)
+	}
+}
+
+// checkSubtitles reads segment 11, second 2 of the 3 s break, in each
+// subtitle format.
+func (e *e2e) checkSubtitles() {
+	t := e.t
+	const cue = "[AD 2/3] %s · SUB · 18:00:11 · frame 275 · Bop!"
+	vtt := string(e.live("sub-en/11.vtt"))
+	if want := "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:990000,LOCAL:00:00:11.000\n\n00:00:11.000 --> 00:00:12.000\n" + fmt.Sprintf(cue, "EN") + "\n"; vtt != want {
+		t.Errorf("sub-en/11.vtt:\n%s\nwant\n%s", vtt, want)
+	}
+
+	f, err := mp4.DecodeFile(bytes.NewReader(append(e.live("sub-en/init.mp4"), e.live("sub-en/11.m4s")...)))
+	if err != nil || f.Init == nil || len(f.Segments) != 1 {
+		t.Fatalf("sub-en wvtt: %v", err)
+	}
+	samples, err := f.Segments[0].Fragments[0].GetFullSamples(nil)
+	if err != nil || len(samples) != 1 || samples[0].DecodeTime != 990000 || samples[0].Dur != 90000 {
+		t.Fatalf("sub-en/11.m4s samples %+v, %v", samples, err)
+	}
+	box, err := mp4.DecodeBox(0, bytes.NewReader(samples[0].Data))
+	if vttc, ok := box.(*mp4.VttcBox); err != nil || !ok || vttc.Payl == nil || vttc.Payl.CueText != fmt.Sprintf(cue, "EN") {
+		t.Errorf("sub-en/11.m4s cue: %+v, %v", box, err)
+	}
+
+	out, err := exec.CommandContext(t.Context(), "ffprobe", "-v", "error", "-count_packets",
+		"-show_entries", "stream=codec_name,nb_read_packets", "-of", "default=nw=1:nk=1", e.file("sub-fr", 11)).Output()
+	if got := strings.Join(strings.Fields(string(out)), " "); err != nil || got != "ttml 1" {
+		t.Errorf("ffprobe sub-fr: %q, %v; want ttml 1", got, err)
+	}
+	if seg := e.live("sub-fr/11.m4s"); !bytes.Contains(seg, []byte(`<p begin="00:00:11.000" end="00:00:12.000"><span style="cue">`+fmt.Sprintf(cue, "FR")+"</span></p>")) {
+		t.Errorf("sub-fr/11.m4s lacks the cue:\n%s", seg)
 	}
 }
 

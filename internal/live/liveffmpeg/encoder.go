@@ -435,7 +435,7 @@ func videoTrack(v stream.Video, f *mp4.File) (live.Track, error) {
 	if err != nil {
 		return live.Track{}, fmt.Errorf("rendition %s: %w", v.ID, err)
 	}
-	return live.Track{ID: v.ID, Video: true, Timescale: timeline.VideoTimescale, Codec: codec, Init: b}, nil
+	return live.Track{ID: v.ID, Kind: live.KindVideo, Timescale: timeline.VideoTimescale, Codec: codec, Init: b}, nil
 }
 
 // videoInit returns the codec string and init segment of a video track
@@ -547,6 +547,7 @@ func audioTrack(a stream.Audio, f *mp4.File) (live.Track, error) {
 	}
 	return live.Track{
 		ID:        a.ID,
+		Kind:      live.KindAudio,
 		Timescale: timeline.AudioTimescale,
 		Codec:     codec,
 		Init:      b,

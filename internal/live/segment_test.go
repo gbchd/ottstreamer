@@ -7,23 +7,11 @@ import (
 	"sync"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"ottstreamer/internal/adbreak"
+	"ottstreamer/internal/stream"
 )
-
-func TestManager_Init(t *testing.T) {
-	h := newHarness(nil)
-	h.add(t, running("a", ast))
-	got, err := h.m.Init("a", "720p")
-	if err != nil || string(got) != "init 720p" {
-		t.Fatalf("Init = %q, %v", got, err)
-	}
-	for _, tc := range []struct{ stream, rendition string }{{"b", "720p"}, {"a", "1080p"}} {
-		if _, err := h.m.Init(tc.stream, tc.rendition); !errors.Is(err, ErrNotFound) {
-			t.Errorf("Init(%s, %s) = %v, want ErrNotFound", tc.stream, tc.rendition, err)
-		}
-	}
-}
 
 func TestManager_WriteSegment_notFound(t *testing.T) {
 	h := newHarness(nil)
@@ -211,5 +199,122 @@ func TestManager_WriteSegment_retry(t *testing.T) {
 				t.Fatalf("%d encode attempts, want 2", got)
 			}
 		})
+	}
+}
+
+// subtitled returns running(id) with an English WebVTT and a French IMSC1
+// track, segments of seg and the clock in zone.
+func subtitled(id string, seg time.Duration, zone string) stream.Stream {
+	s := running(id, ast)
+	s.Spec.Subtitles = []stream.Subtitle{
+		{ID: "sub-en", Lang: "en", Format: stream.SubtitleWebVTT, Default: true},
+		{ID: "sub-fr", Lang: "fr", Format: stream.SubtitleIMSC1},
+	}
+	s.Spec.SegmentDuration, s.Spec.GOPDuration, s.Spec.Timezone = seg, seg, zone
+	s.Status.Epoch.Spec = s.Spec.Clone()
+	return s
+}
+
+func TestManager_textTracks(t *testing.T) {
+	h := newHarness(nil)
+	rt := h.add(t, subtitled("a", 2*time.Second, "UTC"))
+	for _, want := range []Track{
+		{ID: "sub-en", Kind: KindText, Timescale: 90000, Codec: CodecWebVTT, Lang: "en", Init: []byte("init wvtt en")},
+		{ID: "sub-fr", Kind: KindText, Timescale: 90000, Codec: CodecIMSC1, Lang: "fr", Init: []byte("init stpp.ttml.im1t fr")},
+	} {
+		got, ok := rt.Track(want.ID)
+		if !ok || got.Kind != want.Kind || got.Timescale != want.Timescale || got.Codec != want.Codec || got.Lang != want.Lang || string(got.Init) != string(want.Init) {
+			t.Errorf("track %s = %+v, %t; want %+v", want.ID, got, ok, want)
+		}
+	}
+}
+
+func TestManager_Cues(t *testing.T) {
+	tests := []struct {
+		name      string
+		seg       time.Duration
+		zone      string
+		rendition string
+		breaks    []adbreak.Break
+		n         int64
+		want      []Cue
+	}{
+		{"two whole seconds", 2 * time.Second, "UTC", "sub-en", nil, 3, []Cue{
+			{540000, 630000, "EN · SUB · 18:00:06 · frame 150 · Bip!"},
+			{630000, 720000, "EN · SUB · 18:00:07 · frame 175 · Bop!"},
+		}},
+		{"cut at 1.92 s segment bounds", 1920 * time.Millisecond, "UTC", "sub-fr", nil, 1, []Cue{
+			{172800, 180000, "FR · SUB · 18:00:01 · frame 25 · Bop!"},
+			{180000, 270000, "FR · SUB · 18:00:02 · frame 50 · Bip!"},
+			{270000, 345600, "FR · SUB · 18:00:03 · frame 75 · Bop!"},
+		}},
+		{"local clock", 2 * time.Second, "Europe/Paris", "sub-en", nil, 0, []Cue{
+			{0, 90000, "EN · SUB · 19:00:00 · frame 0 · Bip!"},
+			{90000, 180000, "EN · SUB · 19:00:01 · frame 25 · Bop!"},
+		}},
+		{"in a break returned early", 2 * time.Second, "UTC", "sub-en", []adbreak.Break{{ID: "1", StartSeg: 10, EndSeg: 12, PlannedEndSeg: 15}}, 11, []Cue{
+			{1980000, 2070000, "[AD 3/10] EN · SUB · 18:00:22 · frame 550 · Bip!"},
+			{2070000, 2160000, "[AD 4/10] EN · SUB · 18:00:23 · frame 575 · Bop!"},
+		}},
+		{"break starting mid-second", 1920 * time.Millisecond, "UTC", "sub-en", []adbreak.Break{{ID: "1", StartSeg: 2, EndSeg: 4, PlannedEndSeg: 4}}, 2, []Cue{
+			{345600, 360000, "[AD 1/5] EN · SUB · 18:00:03 · frame 75 · Bop!"},
+			{360000, 450000, "[AD 2/5] EN · SUB · 18:00:04 · frame 100 · Bip!"},
+			{450000, 518400, "[AD 3/5] EN · SUB · 18:00:05 · frame 125 · Bop!"},
+		}},
+		{"cancelled break", 2 * time.Second, "UTC", "sub-en", []adbreak.Break{{ID: "1", StartSeg: 0, EndSeg: 2, PlannedEndSeg: 2, Cancelled: true}}, 0, []Cue{
+			{0, 90000, "EN · SUB · 18:00:00 · frame 0 · Bip!"},
+			{90000, 180000, "EN · SUB · 18:00:01 · frame 25 · Bop!"},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(nil)
+			h.add(t, subtitled("a", tt.seg, tt.zone))
+			h.sched.set(tt.breaks...)
+			got, err := h.m.Cues(t.Context(), "a", tt.rendition, tt.n)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("Cues =\n%v\nwant\n%v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestManager_Cues_notFound(t *testing.T) {
+	h := newHarness(nil)
+	h.add(t, subtitled("a", 2*time.Second, "UTC"))
+	h.m.End("a", 5)
+	for _, tc := range []struct {
+		rendition string
+		n         int64
+	}{{"720p", 0}, {"en", 0}, {"sub-de", 0}, {"sub-en", 6}} {
+		if _, err := h.m.Cues(t.Context(), "a", tc.rendition, tc.n); !errors.Is(err, ErrNotFound) {
+			t.Errorf("Cues(%s, %d) = %v, want ErrNotFound", tc.rendition, tc.n, err)
+		}
+	}
+}
+
+func TestManager_WriteSegment_text(t *testing.T) {
+	h := newHarness(nil)
+	h.add(t, subtitled("a", 2*time.Second, "UTC"))
+	if err := h.m.WriteSegment(t.Context(), &strings.Builder{}, "a", "sub-fr", 3); err != nil {
+		t.Fatal(err)
+	}
+	f := h.w.last()
+	if f.Seq != 4 || f.BaseTime != 540000 || f.Codec != CodecIMSC1 || f.Lang != "fr" || len(f.Cues) != 2 || len(f.Samples) != 0 || f.PadTo != 0 {
+		t.Fatalf("fragment = %+v", f)
+	}
+	if got := len(h.enc.encoded()); got != 0 {
+		t.Fatalf("subtitles ran the encoder %d times", got)
+	}
+}
+
+func TestTimestamp(t *testing.T) {
+	for ticks, want := range map[int64]string{0: "00:00:00.000", 172800: "00:00:01.920", 90000 * 3723: "01:02:03.000", 90000 * 100 * 3600: "100:00:00.000"} {
+		if got := Timestamp(ticks); got != want {
+			t.Errorf("Timestamp(%d) = %s, want %s", ticks, got, want)
+		}
 	}
 }

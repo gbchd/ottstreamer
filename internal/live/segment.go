@@ -4,39 +4,21 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
+	"time"
 
+	"ottstreamer/internal/adbreak"
 	"ottstreamer/internal/event"
 	"ottstreamer/internal/timeline"
 )
 
-// Init returns the CMAF header of a rendition.
-func (m *Manager) Init(streamID, rendition string) ([]byte, error) {
-	rt, ok := m.Runtime(streamID)
-	if !ok {
-		return nil, fmt.Errorf("%w: stream %s", ErrNotFound, streamID)
-	}
-	t, ok := rt.Track(rendition)
-	if !ok {
-		return nil, fmt.Errorf("%w: rendition %s of %s", ErrNotFound, rendition, streamID)
-	}
-	return t.Init, nil
-}
-
 // WriteSegment writes media segment n of a rendition to w. Video comes from
-// the cache or is encoded on demand; audio is sliced from the track's loop.
-// It does not check n against the live window.
+// the cache or is encoded on demand; audio is sliced from the track's loop;
+// subtitle cues are generated. It does not check n against the live window.
 func (m *Manager) WriteSegment(ctx context.Context, w io.Writer, streamID, rendition string, n int64) error {
-	rt, ok := m.Runtime(streamID)
-	if !ok {
-		return fmt.Errorf("%w: stream %s", ErrNotFound, streamID)
-	}
-	t, ok := rt.Track(rendition)
-	if !ok {
-		return fmt.Errorf("%w: rendition %s of %s", ErrNotFound, rendition, streamID)
-	}
-	tl := rt.Timeline()
-	if n < 0 || (tl.EndSeg >= 0 && n > tl.EndSeg) {
-		return fmt.Errorf("%w: segment %d of %s", ErrNotFound, n, streamID)
+	rt, t, err := m.segment(streamID, rendition, n)
+	if err != nil {
+		return err
 	}
 	f, err := m.fragment(ctx, rt, t, n)
 	if err != nil {
@@ -45,10 +27,48 @@ func (m *Manager) WriteSegment(ctx context.Context, w io.Writer, streamID, rendi
 	return m.w.WriteSegment(w, f)
 }
 
+// Cues returns the cues of segment n of a subtitle rendition, as in its
+// media segment. It does not check n against the live window.
+func (m *Manager) Cues(ctx context.Context, streamID, rendition string, n int64) ([]Cue, error) {
+	rt, t, err := m.segment(streamID, rendition, n)
+	if err != nil {
+		return nil, err
+	}
+	if t.Kind != KindText {
+		return nil, fmt.Errorf("%w: %s of %s has no cues", ErrNotFound, rendition, streamID)
+	}
+	return m.cues(ctx, rt, t, n)
+}
+
+// segment finds the runtime and track of segment n of a rendition.
+func (m *Manager) segment(streamID, rendition string, n int64) (*Runtime, Track, error) {
+	rt, ok := m.Runtime(streamID)
+	if !ok {
+		return nil, Track{}, fmt.Errorf("%w: stream %s", ErrNotFound, streamID)
+	}
+	t, ok := rt.Track(rendition)
+	if !ok {
+		return nil, Track{}, fmt.Errorf("%w: rendition %s of %s", ErrNotFound, rendition, streamID)
+	}
+	if tl := rt.Timeline(); n < 0 || (tl.EndSeg >= 0 && n > tl.EndSeg) {
+		return nil, Track{}, fmt.Errorf("%w: segment %d of %s", ErrNotFound, n, streamID)
+	}
+	return rt, t, nil
+}
+
 func (m *Manager) fragment(ctx context.Context, rt *Runtime, t Track, n int64) (Fragment, error) {
 	tl := rt.Timeline()
 	f := Fragment{Seq: uint32(n + 1), TrackID: 1, Codec: t.Codec} //nolint:gosec // mfhd sequence_number is 32-bit and wraps
-	if !t.Video {
+	switch t.Kind {
+	case KindText:
+		cues, err := m.cues(ctx, rt, t, n)
+		if err != nil {
+			return Fragment{}, err
+		}
+		f.BaseTime = uint64(tl.VideoTfdt(n)) //nolint:gosec // n >= 0
+		f.Cues, f.Lang = cues, t.Lang
+		return f, nil
+	case KindAudio:
 		first, end := tl.AudioFrameRange(n, t.FrameSize)
 		f.Samples = make([]Sample, 0, end-first)
 		for i := first; i < end; i++ {
@@ -141,14 +161,60 @@ func (m *Manager) encode(rt *Runtime, n int64, inAd bool) (map[string][]Sample, 
 
 // inAd reports whether segment n falls inside a break that is not cancelled.
 func (m *Manager) inAd(ctx context.Context, rt *Runtime, n int64) (bool, error) {
+	b, err := m.breakAt(ctx, rt, n)
+	return b != nil, err
+}
+
+// breakAt returns the break segment n falls inside, nil if none or if it is
+// cancelled.
+func (m *Manager) breakAt(ctx context.Context, rt *Runtime, n int64) (*adbreak.Break, error) {
 	breaks, err := m.sched.InRange(ctx, rt.stream.ID, rt.epoch, n, n+1)
 	if err != nil {
-		return false, fmt.Errorf("live: breaks of segment %d of %s: %w", n, rt.stream.ID, err)
+		return nil, fmt.Errorf("live: breaks of segment %d of %s: %w", n, rt.stream.ID, err)
 	}
 	for _, b := range breaks {
 		if !b.Cancelled && b.StartSeg <= n && n < b.EndSeg {
-			return true, nil
+			return &b, nil
 		}
 	}
-	return false, nil
+	return nil, nil
+}
+
+// cues returns the cues of text track t in segment n: one per second of the
+// burnt-in clock, cut at the segment's bounds, so they cover it back to
+// back. A cue reads "FR · SUB · 18:30:05 · frame 1250 · Bip!": the clock
+// second, its first frame and its beep, as the picture shows them. In a
+// break it starts with "[AD k/D]": clock second k of the D seconds the
+// planned break touches.
+func (m *Manager) cues(ctx context.Context, rt *Runtime, t Track, n int64) ([]Cue, error) {
+	br, err := m.breakAt(ctx, rt, n)
+	if err != nil {
+		return nil, err
+	}
+	const second = timeline.VideoTimescale
+	tl := rt.Timeline()
+	start, end := tl.VideoTfdt(n), tl.VideoTfdt(n+1)
+	// The picture takes the zone offset at the segment start (see clockText
+	// in liveffmpeg), so the cues do too.
+	_, off := tl.SegStart(n).In(rt.loc).Zone()
+	zone := time.FixedZone("", off)
+	lang := strings.ToUpper(t.Lang)
+
+	first, last := start/second, (end-1)/second
+	cues := make([]Cue, 0, last-first+1)
+	for s := first; s <= last; s++ {
+		beep := "Bip!"
+		if s%2 == 1 {
+			beep = "Bop!"
+		}
+		clock := tl.AST.Add(time.Duration(s) * time.Second).In(zone).Format("15:04:05")
+		text := fmt.Sprintf("%s · SUB · %s · frame %d · %s", lang, clock, s*int64(tl.FPS), beep)
+		if br != nil {
+			from := tl.VideoTfdt(br.StartSeg) / second
+			total := (tl.VideoTfdt(br.PlannedEndSeg)+second-1)/second - from
+			text = fmt.Sprintf("[AD %d/%d] %s", s-from+1, total, text)
+		}
+		cues = append(cues, Cue{Start: max(s*second, start), End: min((s+1)*second, end), Text: text})
+	}
+	return cues, nil
 }

@@ -49,14 +49,14 @@ type fakeEncoder struct {
 func (e *fakeEncoder) StartEpoch(_ context.Context, s stream.Stream) (map[string]Track, error) {
 	tracks := make(map[string]Track)
 	for _, v := range s.Status.Epoch.Spec.Video {
-		tracks[v.ID] = Track{ID: v.ID, Video: true, Timescale: 90000, Codec: "avc1.64001f", Init: []byte("init " + v.ID)}
+		tracks[v.ID] = Track{ID: v.ID, Kind: KindVideo, Timescale: 90000, Codec: "avc1.64001f", Init: []byte("init " + v.ID)}
 	}
 	for _, a := range s.Status.Epoch.Spec.Audio {
 		loop := make([]Sample, 375)
 		for i := range loop {
 			loop[i] = Sample{Data: fmt.Appendf(nil, "frame %d", i)}
 		}
-		tracks[a.ID] = Track{ID: a.ID, Timescale: 48000, FrameSize: a.Codec.FrameSize(), Loop: loop, Init: []byte("init " + a.ID)}
+		tracks[a.ID] = Track{ID: a.ID, Kind: KindAudio, Timescale: 48000, FrameSize: a.Codec.FrameSize(), Loop: loop, Init: []byte("init " + a.ID)}
 	}
 	return tracks, nil
 }
@@ -116,6 +116,10 @@ func (w *fakeWriter) WriteSegment(out io.Writer, f Fragment) error {
 	w.mu.Unlock()
 	_, err := fmt.Fprintf(out, "segment %d", f.Seq)
 	return err
+}
+
+func (*fakeWriter) TextInit(codec, lang string) ([]byte, error) {
+	return []byte("init " + codec + " " + lang), nil
 }
 
 func (w *fakeWriter) last() Fragment {

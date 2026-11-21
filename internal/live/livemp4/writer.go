@@ -39,6 +39,9 @@ func NewWriter() *Writer {
 // WriteSegment writes f as one CMAF media segment. Sample data is referenced,
 // not copied; f must not change until WriteSegment returns.
 func (*Writer) WriteSegment(w io.Writer, f live.Fragment) error {
+	if f.Cues != nil {
+		return writeText(w, f)
+	}
 	if len(f.Samples) == 0 {
 		return fmt.Errorf("segment %d: no samples", f.Seq)
 	}
@@ -85,6 +88,11 @@ func (*Writer) WriteSegment(w io.Writer, f live.Fragment) error {
 		trun.AddSample(mp4.NewSample(flags, f.SampleDur, uint32(size), 0)) //nolint:gosec // sample sizes are far below 4 GiB
 	}
 
+	return encode(w, frag)
+}
+
+// encode writes styp, then frag.
+func encode(w io.Writer, frag *mp4.Fragment) error {
 	styp := mp4.NewStyp("cmfs", 0, []string{"cmfs", "msdh", "msix"})
 	if err := styp.Encode(w); err != nil {
 		return fmt.Errorf("write styp: %w", err)

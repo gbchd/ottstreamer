@@ -25,8 +25,9 @@ import (
 // Runtimes is the part of *live.Manager the handlers call.
 type Runtimes interface {
 	Runtime(id string) (*live.Runtime, bool)
-	Init(streamID, rendition string) ([]byte, error)
 	WriteSegment(ctx context.Context, w io.Writer, streamID, rendition string, n int64) error
+	// Cues returns the cues of segment n of a subtitle rendition.
+	Cues(ctx context.Context, streamID, rendition string, n int64) ([]live.Cue, error)
 }
 
 // Streams reads the current stream record, whose window applies at once.
@@ -251,29 +252,20 @@ func (h *Handler) init(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	b, err := h.runtimes.Init(req.id, rendition)
-	if err != nil {
-		h.fail(w, r, err)
-		return
-	}
-	h.serve(w, r, a, mimeType(t), int(req.window.Retain.Seconds()), b)
+	h.serve(w, r, a, mimeType(t), int(req.window.Retain.Seconds()), t.Init)
 }
 
 func (h *Handler) segmentByNumber(w http.ResponseWriter, r *http.Request) {
-	h.segment(w, r, func(_ live.Track, _ timeline.Timeline, v int64) (int64, bool) { return v, true })
+	h.segment(w, r, false)
 }
 
 func (h *Handler) segmentByTime(w http.ResponseWriter, r *http.Request) {
-	h.segment(w, r, func(t live.Track, tl timeline.Timeline, v int64) (int64, bool) {
-		if t.Video {
-			return tl.VideoSegAt(v)
-		}
-		return tl.AudioSegAt(v, t.FrameSize)
-	})
+	h.segment(w, r, true)
 }
 
-// segment serves {v}.m4s, where toSeg maps v to the segment number.
-func (h *Handler) segment(w http.ResponseWriter, r *http.Request, toSeg func(live.Track, timeline.Timeline, int64) (int64, bool)) {
+// segment serves {N}.m4s, or {mediaTime}.m4s when byTime. A WebVTT
+// subtitle rendition also serves {N}.vtt, for HLS.
+func (h *Handler) segment(w http.ResponseWriter, r *http.Request, byTime bool) {
 	req, err := h.resolve(r)
 	if err != nil {
 		h.fail(w, r, err)
@@ -281,12 +273,20 @@ func (h *Handler) segment(w http.ResponseWriter, r *http.Request, toSeg func(liv
 	}
 	rendition := r.PathValue("rendition")
 	t, ok := req.rt.Track(rendition)
-	v, err := strconv.ParseInt(strings.TrimSuffix(r.PathValue("segment"), ".m4s"), 10, 64)
-	if !ok || err != nil || !strings.HasSuffix(r.PathValue("segment"), ".m4s") {
+	num, ext, _ := strings.Cut(r.PathValue("segment"), ".")
+	n, err := strconv.ParseInt(num, 10, 64)
+	vtt := ext == "vtt" && !byTime && t.Codec == live.CodecWebVTT
+	if !ok || err != nil || (ext != "m4s" && !vtt) {
 		http.NotFound(w, r)
 		return
 	}
-	n, ok := toSeg(t, req.tl, v)
+	if byTime {
+		if t.Kind == live.KindAudio {
+			n, ok = req.tl.AudioSegAt(n, t.FrameSize)
+		} else {
+			n, ok = req.tl.VideoSegAt(n)
+		}
+	}
 	if !ok || !req.tl.Available(n, req.now, req.window.Retain) {
 		http.NotFound(w, r)
 		return
@@ -296,18 +296,31 @@ func (h *Handler) segment(w http.ResponseWriter, r *http.Request, toSeg func(liv
 		return
 	}
 	var buf bytes.Buffer
-	if err := h.runtimes.WriteSegment(r.Context(), &buf, req.id, rendition, n); err != nil {
+	contentType := mimeType(t)
+	if vtt {
+		var cues []live.Cue
+		if cues, err = h.runtimes.Cues(r.Context(), req.id, rendition, n); err == nil {
+			buf.WriteString(webVTT(req.tl.VideoTfdt(n), cues))
+		}
+		contentType = "text/vtt"
+	} else {
+		err = h.runtimes.WriteSegment(r.Context(), &buf, req.id, rendition, n)
+	}
+	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
-	h.serve(w, r, a, mimeType(t), int(req.window.Retain.Seconds()), buf.Bytes())
+	h.serve(w, r, a, contentType, int(req.window.Retain.Seconds()), buf.Bytes())
 }
 
 func mimeType(t live.Track) string {
-	if t.Video {
+	switch t.Kind {
+	case live.KindVideo:
 		return "video/mp4"
+	case live.KindAudio:
+		return "audio/mp4"
 	}
-	return "audio/mp4"
+	return "application/mp4"
 }
 
 // serve writes body with Range support (206), throttled or truncated as a

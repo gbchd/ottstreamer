@@ -114,6 +114,7 @@ type Runtime struct {
 	stream stream.Stream // launch snapshot
 	epoch  int
 	tl     timeline.Timeline
+	loc    *time.Location // of the burnt-in clock, which subtitles repeat
 	endSeg atomic.Int64
 	tracks map[string]Track
 
@@ -190,11 +191,27 @@ func (m *Manager) newRuntime(ctx context.Context, s stream.Stream) (*Runtime, er
 	if err := checkTracks(e.Spec, tracks); err != nil {
 		return nil, fmt.Errorf("live: start epoch of %s: %w", s.ID, err)
 	}
+	for _, sub := range e.Spec.Subtitles {
+		codec := CodecWebVTT
+		if sub.Format == stream.SubtitleIMSC1 {
+			codec = CodecIMSC1
+		}
+		init, err := m.w.TextInit(codec, sub.Lang)
+		if err != nil {
+			return nil, fmt.Errorf("live: start epoch of %s: subtitles %s: %w", s.ID, sub.ID, err)
+		}
+		tracks[sub.ID] = Track{ID: sub.ID, Kind: KindText, Timescale: timeline.VideoTimescale, Codec: codec, Lang: sub.Lang, Init: init}
+	}
+	loc, err := time.LoadLocation(e.Spec.Timezone)
+	if err != nil {
+		return nil, fmt.Errorf("live: start epoch of %s: %w", s.ID, err)
+	}
 	rctx, cancel := context.WithCancel(event.WithActor(context.WithoutCancel(ctx), event.System))
 	rt := &Runtime{
 		stream: s,
 		epoch:  e.Number,
 		tl:     e.Timeline(),
+		loc:    loc,
 		tracks: tracks,
 		ctx:    rctx,
 		cancel: cancel,
@@ -206,12 +223,12 @@ func (m *Manager) newRuntime(ctx context.Context, s stream.Stream) (*Runtime, er
 
 func checkTracks(spec stream.Spec, tracks map[string]Track) error {
 	for _, v := range spec.Video {
-		if t, ok := tracks[v.ID]; !ok || !t.Video {
+		if t, ok := tracks[v.ID]; !ok || t.Kind != KindVideo {
 			return fmt.Errorf("no video track %s", v.ID)
 		}
 	}
 	for _, a := range spec.Audio {
-		if t, ok := tracks[a.ID]; !ok || t.FrameSize <= 0 || len(t.Loop) == 0 {
+		if t, ok := tracks[a.ID]; !ok || t.Kind != KindAudio || t.FrameSize <= 0 || len(t.Loop) == 0 {
 			return fmt.Errorf("no audio loop for %s", a.ID)
 		}
 	}

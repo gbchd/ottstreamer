@@ -63,11 +63,11 @@ func TestFaults_Truncate(t *testing.T) {
 }
 
 func TestFaults_Throttle(t *testing.T) {
-	// 1 kbps is 125 B/s: chunks of 12, 12 and 7 bytes, 96 ms apart.
+	// 1 kbps is 125 B/s: chunks of 12, 12, 12 and 2 bytes, 96 ms apart.
 	srv := newServer(t, fault.Rule{ID: "thr", Match: fault.Match{Kind: fault.KindSegment}, Action: fault.Action{ThrottleKbps: 1}})
 	start := time.Now()
 	r := get(t, srv, "/live/demo/720p/499.m4s")
-	if took := time.Since(start); took < 180*time.Millisecond || took > 900*time.Millisecond || r.body != "seq=500 tfdt=89820000 samples=1" {
+	if took := time.Since(start); took < 180*time.Millisecond || took > 900*time.Millisecond || r.body != "seq=500 tfdt=89820000 samples=1 cues=0" {
 		t.Errorf("%q after %v, want the whole segment after about 200ms", r.body, took)
 	}
 	r = get(t, srv, "/live/demo/720p/499.m4s", "Range", "bytes=4-6")

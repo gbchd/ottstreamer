@@ -319,8 +319,8 @@ func fillEvent(e *eventXML, style string, cue []byte) error {
 
 // adaptationSets returns one video AdaptationSet per codec, linked by
 // adaptation-set-switching, then one audio AdaptationSet per (lang,
-// channels, codec) whose bitrate tiers become Representations. Set ids
-// count from 1.
+// channels, codec) whose bitrate tiers become Representations, then one
+// text AdaptationSet per subtitle track. Set ids count from 1.
 func (req request) adaptationSets(o mpdOptions, sp span) []adaptationSetXML {
 	var sets []adaptationSetXML
 	index := map[string]int{}
@@ -376,8 +376,21 @@ func (req request) adaptationSets(o mpdOptions, sp span) []adaptationSetXML {
 			set.Role.Value = "main"
 		}
 	}
+	for _, s := range req.spec.Subtitles {
+		t, _ := req.rt.Track(s.ID)
+		add("text/"+s.ID, adaptationSetXML{
+			ContentType: "text", MimeType: "application/mp4", Lang: s.Lang, SegmentAlignment: true,
+			Label:           cmp.Or(s.Name, s.ID),
+			Role:            &descriptorXML{SchemeIDURI: "urn:mpeg:dash:role:2011", Value: "subtitle"},
+			SegmentTemplate: req.template(o, sp, t),
+		}, representationXML{ID: s.ID, Codecs: t.Codec, Bandwidth: textBandwidth})
+	}
 	return sets
 }
+
+// textBandwidth is a subtitle Representation's @bandwidth in bit/s: above
+// what a segment's cues take, about 1 kbit/s for wvtt and 3 for stpp.
+const textBandwidth = 4000
 
 func channelConfig(a stream.Audio) *descriptorXML {
 	if a.Codec == stream.CodecAC3 || a.Codec == stream.CodecEAC3 {
@@ -418,7 +431,7 @@ func segmentTimeline(tl timeline.Timeline, t live.Track, from, to int64) *timeli
 	st := &timelineXML{}
 	for n := from; n <= to; n++ {
 		start, d := tl.VideoTfdt(n), tl.SegTicks()
-		if !t.Video {
+		if t.Kind == live.KindAudio {
 			first, end := tl.AudioFrameRange(n, t.FrameSize)
 			start, d = first*int64(t.FrameSize), (end-first)*int64(t.FrameSize)
 		}

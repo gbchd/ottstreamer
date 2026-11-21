@@ -49,11 +49,11 @@ var codecs = map[string]string{"720p": "avc1.64001F", "360p": "avc1.64001E", "en
 func (fakeEncoder) StartEpoch(_ context.Context, s stream.Stream) (map[string]live.Track, error) {
 	tracks := map[string]live.Track{}
 	for _, v := range s.Status.Epoch.Spec.Video {
-		tracks[v.ID] = live.Track{ID: v.ID, Video: true, Timescale: 90000, Codec: codecs[v.ID], Init: []byte("init " + v.ID)}
+		tracks[v.ID] = live.Track{ID: v.ID, Kind: live.KindVideo, Timescale: 90000, Codec: codecs[v.ID], Init: []byte("init " + v.ID)}
 	}
 	for _, a := range s.Status.Epoch.Spec.Audio {
 		fs := a.Codec.FrameSize()
-		tracks[a.ID] = live.Track{ID: a.ID, Timescale: 48000, Codec: codecs[a.ID], Init: []byte("init " + a.ID),
+		tracks[a.ID] = live.Track{ID: a.ID, Kind: live.KindAudio, Timescale: 48000, Codec: codecs[a.ID], Init: []byte("init " + a.ID),
 			FrameSize: fs, Loop: make([]live.Sample, 8*48000/fs)}
 	}
 	return tracks, nil
@@ -81,8 +81,12 @@ type fakeWriter struct{}
 
 func (fakeWriter) WriteSegment(w io.Writer, f live.Fragment) error {
 	segmentWrites.Add(1)
-	_, err := fmt.Fprintf(w, "seq=%d tfdt=%d samples=%d", f.Seq, f.BaseTime, len(f.Samples))
+	_, err := fmt.Fprintf(w, "seq=%d tfdt=%d samples=%d cues=%d", f.Seq, f.BaseTime, len(f.Samples), len(f.Cues))
 	return err
+}
+
+func (fakeWriter) TextInit(codec, lang string) ([]byte, error) {
+	return []byte("init " + codec + " " + lang), nil
 }
 
 type fakeStreams map[string]stream.Stream
@@ -121,6 +125,10 @@ func spec() stream.Spec {
 	s.Audio = append(s.Audio, stream.Audio{ID: "en-51", Lang: "en", Name: "English 5.1", Channels: 6, BitrateKbps: 384, Codec: stream.CodecAC3})
 	s.Ads.HLS = []string{"daterange", "cueout"}
 	s.Ads.DASH = []string{"eventstream-bin", "inband"}
+	s.Subtitles = []stream.Subtitle{
+		{ID: "sub-en", Lang: "en", Name: "English", Format: stream.SubtitleWebVTT, Default: true},
+		{ID: "sub-fr", Lang: "fr", Name: "Français", Format: stream.SubtitleIMSC1},
+	}
 	s.Normalize()
 	return s
 }
@@ -290,6 +298,8 @@ func TestManifests(t *testing.T) {
 		{"hls_720p_time_signal", "/live/ts/720p.m3u8", ""},
 		{"hls_en_aac", "/live/demo/en.m3u8", ""},
 		{"hls_en51_ac3", "/live/demo/en-51.m3u8", ""},
+		{"hls_sub_en_webvtt", "/live/demo/sub-en.m3u8", ""},
+		{"hls_sub_fr_imsc1", "/live/demo/sub-fr.m3u8", ""},
 		{"hls_master", "/live/demo/master.m3u8", "application/vnd.apple.mpegurl"},
 		{"hls_ended", "/live/ended/720p.m3u8", ""},
 		{"mpd_timeline_time", "/live/demo/manifest.mpd", "application/dash+xml"},
@@ -334,7 +344,7 @@ func TestMediaPlaylist_SameCuesInEveryRendition(t *testing.T) {
 	if want == "" {
 		t.Fatal("no cue tags")
 	}
-	for _, r := range []string{"360p", "en", "en-51"} {
+	for _, r := range []string{"360p", "en", "en-51", "sub-en", "sub-fr"} {
 		if got := cueTags(get(t, srv, "/live/demo/"+r+".m3u8").body); got != want {
 			t.Errorf("%s cue tags differ from 720p:\n%s", r, got)
 		}
@@ -354,14 +364,18 @@ func TestNotFound(t *testing.T) {
 		"/live/demo/1080p.m3u8",
 		"/live/demo/1080p/init.mp4",
 		"/live/demo/1080p/499.m4s",
-		"/live/demo/720p/500.m4s",         // not published yet
-		"/live/demo/720p/349.m4s",         // past retention (300 s)
-		"/live/demo/720p/abc.m4s",         // not a number
-		"/live/demo/720p/499.mp4",         // not a segment
-		"/live/ended/720p/498.m4s",        // after the end segment
-		"/live/demo/720p/t/89820001.m4s",  // one tick after segment 499
-		"/live/demo/en/t/47904769.m4s",    // one tick after AAC segment 499
-		"/live/demo/en-51/t/47904769.m4s", // one tick after AC-3 segment 499
+		"/live/demo/720p/500.m4s",          // not published yet
+		"/live/demo/720p/349.m4s",          // past retention (300 s)
+		"/live/demo/720p/abc.m4s",          // not a number
+		"/live/demo/720p/499.mp4",          // not a segment
+		"/live/demo/720p/499.vtt",          // not a WebVTT track
+		"/live/demo/sub-fr/499.vtt",        // IMSC1 has no plain WebVTT
+		"/live/demo/sub-en/t/89820000.vtt", // WebVTT is addressed by number
+		"/live/demo/sub-en/500.vtt",        // not published yet
+		"/live/ended/720p/498.m4s",         // after the end segment
+		"/live/demo/720p/t/89820001.m4s",   // one tick after segment 499
+		"/live/demo/en/t/47904769.m4s",     // one tick after AAC segment 499
+		"/live/demo/en-51/t/47904769.m4s",  // one tick after AC-3 segment 499
 		"/live/demo/720p/t/89820000.m4s?now=" + strconv.FormatInt(ast.Add(999*time.Second).UnixMilli(), 10), // ?now= before it is published
 	} {
 		if r := get(t, srv, path); r.status != http.StatusNotFound {
@@ -428,7 +442,7 @@ func TestQueryPropagation(t *testing.T) {
 // queryPropagates checks that every URL the manifests write carries q.
 func queryPropagates(t *testing.T, srv *httptest.Server, q string) {
 	t.Helper()
-	for _, path := range []string{"/live/demo/master.m3u8", "/live/demo/720p.m3u8", "/live/demo/en.m3u8"} {
+	for _, path := range []string{"/live/demo/master.m3u8", "/live/demo/720p.m3u8", "/live/demo/en.m3u8", "/live/demo/sub-en.m3u8", "/live/demo/sub-fr.m3u8"} {
 		r := get(t, srv, path+"?"+q)
 		for line := range strings.Lines(r.body) {
 			line = strings.TrimSpace(line)
@@ -445,8 +459,8 @@ func queryPropagates(t *testing.T, srv *httptest.Server, q string) {
 	}
 	r := get(t, srv, "/live/demo/manifest.mpd?"+q)
 	esc := strings.ReplaceAll(q, "&", "&amp;")
-	if n := strings.Count(r.body, ".m4s?"+esc+`"`) + strings.Count(r.body, "init.mp4?"+esc+`"`); n != 2*3 {
-		t.Errorf("MPD: %d templates carry the query, want 6:\n%s", n, r.body)
+	if n := strings.Count(r.body, ".m4s?"+esc+`"`) + strings.Count(r.body, "init.mp4?"+esc+`"`); n != 2*5 {
+		t.Errorf("MPD: %d templates carry the query, want 10:\n%s", n, r.body)
 	}
 }
 
@@ -457,12 +471,16 @@ func TestSegments(t *testing.T) {
 	}{
 		{"/live/demo/720p/init.mp4", "video/mp4", "init 720p"},
 		{"/live/demo/en-51/init.mp4", "audio/mp4", "init en-51"},
-		{"/live/demo/720p/499.m4s", "video/mp4", "seq=500 tfdt=89820000 samples=1"},
-		{"/live/demo/720p/t/89820000.m4s", "video/mp4", "seq=500 tfdt=89820000 samples=1"},
-		{"/live/demo/720p/350.m4s", "video/mp4", "seq=351 tfdt=63000000 samples=1"},
-		{"/live/demo/en/t/47904768.m4s", "audio/mp4", "seq=500 tfdt=47904768 samples=93"},
-		{"/live/demo/en-51/t/47904768.m4s", "audio/mp4", "seq=500 tfdt=47904768 samples=62"},
-		{"/live/ended/720p/497.m4s", "video/mp4", "seq=498 tfdt=89460000 samples=1"},
+		{"/live/demo/sub-en/init.mp4", "application/mp4", "init wvtt en"},
+		{"/live/demo/sub-fr/init.mp4", "application/mp4", "init stpp.ttml.im1t fr"},
+		{"/live/demo/720p/499.m4s", "video/mp4", "seq=500 tfdt=89820000 samples=1 cues=0"},
+		{"/live/demo/720p/t/89820000.m4s", "video/mp4", "seq=500 tfdt=89820000 samples=1 cues=0"},
+		{"/live/demo/720p/350.m4s", "video/mp4", "seq=351 tfdt=63000000 samples=1 cues=0"},
+		{"/live/demo/en/t/47904768.m4s", "audio/mp4", "seq=500 tfdt=47904768 samples=93 cues=0"},
+		{"/live/demo/en-51/t/47904768.m4s", "audio/mp4", "seq=500 tfdt=47904768 samples=62 cues=0"},
+		{"/live/demo/sub-en/499.m4s", "application/mp4", "seq=500 tfdt=89820000 samples=0 cues=2"},
+		{"/live/demo/sub-fr/t/89820000.m4s", "application/mp4", "seq=500 tfdt=89820000 samples=0 cues=2"},
+		{"/live/ended/720p/497.m4s", "video/mp4", "seq=498 tfdt=89460000 samples=1 cues=0"},
 	}
 	for _, tt := range tests {
 		r := get(t, srv, tt.path)
@@ -474,7 +492,7 @@ func TestSegments(t *testing.T) {
 		}
 	}
 	r := get(t, srv, "/live/demo/720p/499.m4s", "Range", "bytes=4-6")
-	if r.status != http.StatusPartialContent || r.body != "500" || r.header.Get("Content-Range") != "bytes 4-6/31" {
+	if r.status != http.StatusPartialContent || r.body != "500" || r.header.Get("Content-Range") != "bytes 4-6/38" {
 		t.Errorf("Range: %d %q %q", r.status, r.body, r.header.Get("Content-Range"))
 	}
 }
@@ -508,10 +526,10 @@ func TestMPD_TimelineMatchesSegments(t *testing.T) {
 	}
 	sp := spec()
 	tl := (&stream.Epoch{AST: ast, Spec: sp}).Timeline()
-	frameSize := map[string]int{"720p": 0, "360p": 0, "en": 1024, "en-51": 1536}
+	frameSize := map[string]int{"720p": 0, "360p": 0, "en": 1024, "en-51": 1536, "sub-en": 0, "sub-fr": 0}
 	sets := doc.Periods[0].AdaptationSets
-	if len(sets) != 3 {
-		t.Fatalf("%d AdaptationSets, want 3", len(sets))
+	if len(sets) != 5 {
+		t.Fatalf("%d AdaptationSets, want 5", len(sets))
 	}
 	for _, as := range sets {
 		var got [][2]int64
@@ -601,8 +619,48 @@ func TestManifests_Codecs(t *testing.T) {
 		"5 audio ac-3 tag:dolby.com,2014:dash:audio_channel_configuration:2011=F801",
 		"6 audio ec-3 tag:dolby.com,2014:dash:audio_channel_configuration:2011=F801",
 		"7 audio opus urn:mpeg:mpegB:cicp:ChannelConfiguration=2",
+		"8 text wvtt",
+		"9 text stpp.ttml.im1t",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("adaptation sets:\n got %q\nwant %q", got, want)
+	}
+}
+
+// A WebVTT segment repeats the clock of its two seconds and maps its cue
+// times onto the video's 90 kHz media time.
+func TestSegments_WebVTT(t *testing.T) {
+	srv := newServer(t)
+	r := get(t, srv, "/live/demo/sub-en/499.vtt")
+	if r.status != http.StatusOK || r.header.Get("Content-Type") != "text/vtt" || r.header.Get("Cache-Control") != "max-age=300" {
+		t.Fatalf("GET: %d %q %q: %s", r.status, r.header.Get("Content-Type"), r.header.Get("Cache-Control"), r.body)
+	}
+	golden(t, "vtt_sub_en_499", r.body)
+	// Segment 490 opens break 7 (490..495, 10 s).
+	if r := get(t, srv, "/live/demo/sub-en/490.vtt"); !strings.Contains(r.body, "[AD 1/10] EN · SUB · 18:16:20 · frame 24500 · Bip!") {
+		t.Errorf("break cue missing:\n%s", r.body)
+	}
+}
+
+// Fault rules hit subtitle renditions like any other.
+func TestSubtitles_Faults(t *testing.T) {
+	srv := newServer(t,
+		fault.Rule{ID: "gap", Match: fault.Match{Kind: fault.KindSegment, Renditions: []string{"sub-en"}, Segments: &fault.Range{From: 499}}, Action: fault.Action{Gap: true}},
+		fault.Rule{ID: "down", Match: fault.Match{Kind: fault.KindSegment, Renditions: []string{"sub-fr"}}, Action: fault.Action{Status: http.StatusServiceUnavailable}},
+	)
+	if r := get(t, srv, "/live/demo/sub-en.m3u8"); !strings.Contains(r.body, "#EXT-X-GAP\nsub-en/499.vtt\n") || strings.Count(r.body, "#EXT-X-GAP") != 1 {
+		t.Errorf("sub-en playlist does not mark 499 alone as a gap:\n%s", r.body)
+	}
+	for path, want := range map[string]int{
+		"/live/demo/sub-en/499.vtt":  http.StatusNotFound,
+		"/live/demo/sub-en/499.m4s":  http.StatusNotFound,
+		"/live/demo/sub-en/498.vtt":  http.StatusOK,
+		"/live/demo/sub-fr/499.m4s":  http.StatusServiceUnavailable,
+		"/live/demo/sub-fr/init.mp4": http.StatusOK,
+		"/live/demo/720p/499.m4s":    http.StatusOK,
+	} {
+		if r := get(t, srv, path); r.status != want {
+			t.Errorf("GET %s: %d, want %d", path, r.status, want)
+		}
 	}
 }
