@@ -40,6 +40,13 @@ export async function api(path, { method = 'GET', body, headers: extra = {} } = 
   return type.startsWith('application/json') ? res.json() : res.text();
 }
 
+// live fetches /live + path as text, as any player would: without the key.
+export async function live(path) {
+  const res = await fetch('/live' + path);
+  if (!res.ok) throw new APIError(res.status, null);
+  return res.text();
+}
+
 // clockOffset is server time minus local time, in ms, from /api/time
 // (without ?stream=, so no fault skew applies).
 export async function clockOffset() {

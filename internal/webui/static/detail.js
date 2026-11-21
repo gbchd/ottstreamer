@@ -1,10 +1,11 @@
 // The stream detail page: header, playback URLs, player, timeline, break and
 // fault panels and the event table, kept current by the event stream.
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import { api, clockOffset, followEvents } from './api.js';
-import { html, Link, Badge, ErrorBox, useNow, useAction, clock, ladder, liveEdge, hex, streamPath } from './ui.js';
+import { api, live, clockOffset, followEvents } from './api.js';
+import { html, Link, Badge, ErrorBox, useNow, useAction, clock, ladder, liveEdge, hex, streamPath, useCached } from './ui.js';
 import { Player } from './player.js';
 import { Timeline, LANES, lane } from './timeline.js';
+import { Err, Num, Text, Select, Check, Multi, setIn } from './form.js';
 
 // ponytail: the page keeps the last 5000 events and /timeline returns at most
 // 1000 per range, so a busy epoch zoomed out shows only part of its events;
@@ -101,7 +102,7 @@ export function Detail({ id, me }) {
     <section>
       <h2>Timeline</h2>
       <${Timeline} m=${m} now=${now} events=${events} breaks=${[...breaks.values()]} onRange=${loadTimeline} onPick=${setPick} />
-      <${Picked} pick=${pick} breaks=${breaks} />
+      <${Picked} id=${id} stream=${stream} m=${m} pick=${pick} breaks=${breaks} events=${events} onPick=${setPick} />
     </section>
     <${EventTable} events=${events} onPick=${setPick} />`;
 }
@@ -278,10 +279,57 @@ function presets(spec) {
   return out.map(([label, rule]) => [label, { ...rule, ttlSeconds: 600 }]);
 }
 
+// ACTIONS lists the actions each match kind takes, per the spec's table.
+const COMMON = ['status', 'delayMs', 'throttleKbps', 'reset', 'clockSkewSeconds'];
+const ACTIONS = {
+  segment: [...COMMON, 'truncatePercent', 'gap'],
+  init: [...COMMON, 'truncatePercent'],
+  playlist: [...COMMON, 'staleSeconds'],
+  mpd: [...COMMON, 'staleSeconds'],
+  master: COMMON,
+  time: ['clockSkewSeconds'],
+};
+const BY_RENDITION = ['segment', 'init', 'playlist'];
+const BLANK = { id: '', match: { kind: 'segment' }, action: {} };
+
+// clean drops what the form holds for another kind, so switching kinds back
+// and forth keeps the values but the PUT carries only those that apply.
+function clean(rule) {
+  const kind = rule.match.kind;
+  const match = { ...rule.match };
+  if (!BY_RENDITION.includes(kind)) delete match.renditions;
+  if (kind !== 'segment' || Object.keys(match.segments ?? {}).length === 0) delete match.segments;
+  const action = Object.fromEntries(Object.entries(rule.action ?? {}).filter(([k]) => ACTIONS[kind].includes(k)));
+  return { ...rule, match, action };
+}
+
 function FaultPanel({ p, rules, now, canWrite, spec, onChange }) {
   const [draft, setDraft] = useState('');
+  const [rule, setRule] = useState(BLANK); // the form's rule
+  const [was, setWas] = useState(null); // the id of the rule the form edits
+  const [at, setAt] = useState(0); // its index in the form's last PUT, for its field errors
   const action = useAction();
-  const put = (next) => action.run(async () => onChange(await api(p + '/faults', { method: 'PUT', body: next })));
+  const formAction = useAction();
+  const put = (next, act = action) => act.run(async () => {
+    const res = await api(p + '/faults', { method: 'PUT', body: next });
+    onChange(res);
+    return res;
+  });
+  const load = (r) => {
+    setRule(r);
+    setWas(r.id || null);
+    formAction.setError(null);
+  };
+  const saveForm = async (e) => {
+    e.preventDefault();
+    const next = rules.map(keep);
+    const i = rules.findIndex((r) => r.id === (was ?? rule.id));
+    const k = i < 0 ? next.push(null) - 1 : i;
+    next[k] = keep(clean(rule));
+    setAt(k);
+    const res = await put(next, formAction);
+    if (res) load(res[k]);
+  };
   const save = () => {
     let rule;
     try {
@@ -304,17 +352,19 @@ function FaultPanel({ p, rules, now, canWrite, spec, onChange }) {
     <h2>Fault rules</h2>
     <table>
       <thead><tr><th>Rule</th><th>Match</th><th>Hit</th><th>Action</th><th>Expires</th>${canWrite && html`<th></th>`}</tr></thead>
-      <tbody>${rules.map((r) => html`<tr key=${r.id}>
+      <tbody>${rules.map((r) => html`<tr key=${r.id} class=${was === r.id ? 'picked' : ''} onClick=${canWrite ? () => load(r) : undefined}>
         <td>${r.id}</td>
         <td>${r.match.kind}${r.match.renditions?.length ? ` · ${r.match.renditions.join(',')}` : ''}${r.match.segments ? ` · ${r.match.segments.from ?? 0}-${r.match.segments.to ?? '∞'}` : ''}</td>
         <td>${r.percent ?? 100} % ${r.mode ?? 'sticky'}</td>
         <td><code>${JSON.stringify(r.action)}</code></td>
         <td>${r.expiresAt ? `in ${Math.max(0, Math.round((Date.parse(r.expiresAt) - now) / 1000))} s` : ''}</td>
-        ${canWrite && html`<td><button onClick=${() => setDraft(JSON.stringify(r, null, 2))}>Edit</button>
-          <button disabled=${action.busy} onClick=${() => remove(r.id)}>Remove</button></td>`}
+        ${canWrite && html`<td><button onClick=${(e) => { e.stopPropagation(); setDraft(JSON.stringify(r, null, 2)); }}>Edit JSON</button>
+          <button disabled=${action.busy} onClick=${(e) => { e.stopPropagation(); remove(r.id); }}>Remove</button></td>`}
       </tr>`)}</tbody>
     </table>
     ${rules.length === 0 && html`<p class="muted">No active rules.</p>`}
+    ${canWrite && html`<${FaultForm} rule=${rule} setRule=${setRule} was=${was} at=${at} spec=${spec} now=${now} action=${formAction}
+      onSave=${saveForm} onNew=${() => load(BLANK)} />`}
     ${canWrite && html`
       <p class="presets">${presets(spec).map(([label, rule]) => html`<button class="preset" onClick=${() => setDraft(JSON.stringify(rule, null, 2))}>${label}</button>`)}</p>
       <textarea rows="8" spellcheck="false" placeholder="A rule as JSON; pick a preset to start" value=${draft} onInput=${(e) => setDraft(e.target.value)}></textarea>
@@ -324,16 +374,134 @@ function FaultPanel({ p, rules, now, canWrite, spec, onChange }) {
   </section>`;
 }
 
+// FaultForm edits one rule field by field; a 422 shows next to the fields
+// of the rule at index at of the list it sent.
+function FaultForm({ rule, setRule, was, at, spec, now, action, onSave, onNew }) {
+  const pre = `faults[${at}].`;
+  const fieldErrors = (action.error?.fields ?? []).filter((f) => f.field.startsWith(pre))
+    .map((f) => ({ ...f, field: f.field.slice(pre.length).replace(/\[\d+\]$/, '') }));
+  // editing ttlSeconds drops expiresAt, so the value typed is the one sent
+  const set = (p, v) => setRule((r) => {
+    const n = setIn(r, p, v);
+    if (p[0] === 'ttlSeconds') delete n.expiresAt;
+    return n;
+  });
+  const props = { doc: rule, set, fieldErrors };
+  const kind = rule.match?.kind ?? 'segment';
+  const has = (a) => ACTIONS[kind]?.includes(a);
+  const ids = [...spec.video, ...spec.audio, ...(spec.subtitles ?? [])].map((r) => r.id);
+  return html`<form class="stream-form" onSubmit=${onSave} novalidate>
+    <section class="fields">
+      <h3>${was ? `Edit rule ${was}` : 'New rule'}</h3>
+      <${Text} ...${props} p=${['id']} label="Id" placeholder="slow-720p" />
+      <${Select} ...${props} p=${['match', 'kind']} label="Kind" options=${Object.keys(ACTIONS)} />
+      <${Num} ...${props} p=${['percent']} label="Percent" placeholder="100" step="1" />
+      <${Select} ...${props} p=${['mode']} label="Mode" options=${['sticky', 'transient']} def="sticky" />
+      <${Num} ...${props} p=${['ttlSeconds']} label="TTL (s)" placeholder="none" />
+      ${rule.expiresAt && html`<span class="muted">expires in ${Math.max(0, Math.round((Date.parse(rule.expiresAt) - now) / 1000))} s</span>`}
+      ${kind === 'segment' && html`<${Num} ...${props} p=${['match', 'segments', 'from']} label="From segment" placeholder="0" step="1" />
+        <${Num} ...${props} p=${['match', 'segments', 'to']} label="To segment" placeholder="open" step="1" />
+        <${Err} fieldErrors=${fieldErrors} p=${['match', 'segments']} />`}
+      ${BY_RENDITION.includes(kind) && html`<${Multi} ...${props} p=${['match', 'renditions']} label="Renditions" options=${ids} hint="none: all" />`}
+    </section>
+    <section class="fields">
+      <h3>Actions <${Err} fieldErrors=${fieldErrors} p=${['action']} /></h3>
+      ${has('status') && html`<${Select} ...${props} p=${['action', 'status']} label="Status" options=${[404, 410, 500, 503, 504]} def="none" />`}
+      ${has('delayMs') && html`<${Num} ...${props} p=${['action', 'delayMs']} label="Delay (ms)" step="1" />`}
+      ${has('throttleKbps') && html`<${Num} ...${props} p=${['action', 'throttleKbps']} label="Throttle (kbit/s)" step="1" />`}
+      ${has('truncatePercent') && html`<${Num} ...${props} p=${['action', 'truncatePercent']} label="Truncate (%)" step="1" />`}
+      ${has('staleSeconds') && html`<${Num} ...${props} p=${['action', 'staleSeconds']} label="Stale (s)" />`}
+      ${has('clockSkewSeconds') && html`<${Num} ...${props} p=${['action', 'clockSkewSeconds']} label="Clock skew (s)" />`}
+      ${has('reset') && html`<${Check} ...${props} p=${['action', 'reset']} label="Reset connection" />`}
+      ${has('gap') && html`<${Check} ...${props} p=${['action', 'gap']} label="Gap" />`}
+    </section>
+    <p class="actions">
+      <button type="submit" disabled=${action.busy}>${was ? 'Save rule' : 'Add rule'}</button>
+      <button type="button" onClick=${onNew}>New rule</button>
+    </p>
+    <${ErrorBox} error=${action.error} />
+  </form>`;
+}
+
+// Cue shows a cue as base64 and hex, next to what scte35-go decodes.
 function Cue({ label, b64 }) {
+  const d = useCached(b64 ? 'scte35:' + b64 : null, () => api('/scte35?cue=' + encodeURIComponent(b64)));
   if (!b64) return null;
-  return html`<dt>${label}</dt><dd><code>${b64}</code><br /><code class="muted">${hex(b64)}</code></dd>`;
+  return html`<dt>${label}</dt><dd class="cue">
+    <div><code>${b64}</code><br /><code class="muted">${hex(b64)}</code></div>
+    <div>${!d ? html`<span class="muted">Decoding…</span>`
+      : d.error ? html`<span class="warn">${d.error.status === 422 ? 'scte35-go cannot decode it: ' : ''}${d.error.message}</span>`
+      : html`<strong>${d.value.command}</strong><pre>${JSON.stringify(d.value.section, null, 2)}</pre>`}</div>
+  </dd>`;
+}
+
+const FIRST_CARRIED = ['signal.announced', 'signal.cancel']; // in band, from their segment on
+
+// cueTags reads what each cue style of signal event e wrote, from the
+// manifests /live serves with ?now= just after its segment was published.
+function cueTags(id, e, spec, m, cancelled) {
+  const n = e.segment;
+  const now = m.ast + (n + 1) * m.seg + 1;
+  const base = `/${encodeURIComponent(id)}/`;
+  const video = spec.video[0].id;
+  const hls = async (s) => {
+    const lines = (await live(`${base}${video}.m3u8?now=${now}&cues=${s}`)).split('\n');
+    const i = lines.findIndex((l) => l.split('?')[0] === `${video}/${n}.m4s`);
+    if (i < 0) return { note: `segment ${n} is not in the playlist` };
+    let j = i;
+    while (j > 0 && lines[j - 1].startsWith('#') && !lines[j - 1].startsWith('#EXT-X-MAP')) j--;
+    const tags = lines.slice(j, i).filter((l) => !/^#(EXTINF|EXT-X-PROGRAM-DATE-TIME|EXT-X-GAP)\b/.test(l));
+    return tags.length ? { tags } : { note: e.type === 'signal.announced' ? 'none: HLS writes the cue-out at the break\'s first segment' : `none at segment ${n}` };
+  };
+  // A cue-in Event's id is the event id with bit 30 flipped (livehttp's cueInBit).
+  const want = e.type === 'signal.cue_in' ? (e.data.eventId ^ (1 << 30)) >>> 0 : e.data.eventId;
+  const dash = async (s) => {
+    if (s === 'inband') {
+      const first = FIRST_CARRIED.includes(e.type);
+      const k = first ? n : Math.max(0, n - 1);
+      return {
+        note: first ? `in the emsg box of segment ${n} of every video rendition, then of each segment up to the splice`
+          : `in the emsg boxes of the segments before segment ${n} of every video rendition (from its signal.announced on), last in segment ${k}`,
+        url: `${location.origin}/live${base}${video}/${k}.m4s`,
+      };
+    }
+    const mpd = await live(`${base}manifest.mpd?now=${now}&dashcues=${s}`);
+    // each Event as the MPD indents it, less the indent of its first line
+    const tags = [...mpd.matchAll(new RegExp(`^( *)(<Event id="${want}"[^]*?</Event>)`, 'gm'))].map(([, ind, ev]) => ev.replaceAll('\n' + ind, '\n'));
+    return tags.length ? { tags } : { note: `no Event ${want} in the MPD` };
+  };
+  const styles = [['hls', 'HLS', hls], ['dash', 'DASH', dash]].filter(([f]) => spec.formats.includes(f))
+    .flatMap(([f, label, read]) => (e.data[f] ?? []).map((s) => [`${label} ${s}`, s, read]));
+  return Promise.all(styles.map(async ([style, s, read]) => {
+    if (cancelled && s !== 'inband') return { style, note: 'none: manifests drop a cancelled break, even rendered with ?now= before the cancel' };
+    try {
+      return { style, ...(await read(s)) };
+    } catch (err) {
+      return { style, note: err.status === 404 ? 'HTTP 404: no longer served (stream stopped, or the segment left the retention window)' : err.message };
+    }
+  }));
+}
+
+// CueTags shows, per cue style, the tags a signal event's segment carried.
+function CueTags({ id, e, stream, m, cancelled }) {
+  const epoch = stream.status.epoch;
+  const ok = Boolean(m) && epoch?.number === e.epoch && e.segment !== null;
+  const r = useCached(ok ? 'tags:' + e.id : null, () => cueTags(id, e, epoch.spec, m, cancelled));
+  if (!ok) return html`<dt>Tags</dt><dd class="muted">/live serves only the current epoch of a running or ended stream.</dd>`;
+  if (!r) return html`<dt>Tags</dt><dd class="muted">Reading the manifests…</dd>`;
+  if (r.value.length === 0) return html`<dt>Tags</dt><dd class="muted">No cue style in use.</dd>`;
+  return html`<dt>Tags</dt><dd><table class="cue-tags"><tbody>${r.value.map((t) => html`<tr key=${t.style}>
+    <th>${t.style}</th>
+    <td>${t.tags ? html`<pre>${t.tags.join('\n')}</pre>` : html`<span class="muted">${t.note}</span>`}${t.url && html`<br /><code>${t.url}</code>`}</td>
+  </tr>`)}</tbody></table></dd>`;
 }
 
 // Picked shows the break or event last clicked.
-function Picked({ pick, breaks }) {
+function Picked({ id, stream, m, pick, breaks, events, onPick }) {
   if (!pick) return null;
   if (pick.break) {
     const b = breaks.get(pick.break.id) ?? pick.break;
+    const signals = events.filter((x) => x.type.startsWith('signal.') && x.data.breakId === b.id && x.epoch === stream.status.epoch?.number);
     return html`<div class="picked-box"><h3>Break ${b.id}</h3><dl>
       <dt>Event id</dt><dd>${b.eventId}</dd>
       <dt>Time</dt><dd>${b.start} → ${b.end}</dd>
@@ -342,13 +510,16 @@ function Picked({ pick, breaks }) {
       <dt>Flags</dt><dd>${[b.recurring && 'recurring', b.cancelled && 'cancelled'].filter(Boolean).join(', ') || 'none'}</dd>
       <${Cue} label="Cue-out" b64=${b.cueOut?.base64} />
       <${Cue} label="Cue-in" b64=${b.cueIn?.base64} />
+      <dt>Signals</dt><dd>${signals.length === 0 ? html`<span class="muted">none yet</span>`
+        : signals.map((x) => html`<button key=${x.id} onClick=${() => onPick({ event: x })}>${x.type} · segment ${x.segment}</button> `)}</dd>
     </dl></div>`;
   }
   const e = pick.event;
   return html`<div class="picked-box"><h3>${e.type}</h3><dl>
     <dt>At</dt><dd>${e.at}${e.segment !== null ? ` · segment ${e.segment}` : ''}${e.epoch !== null ? ` · epoch ${e.epoch}` : ''} · ${e.actor}</dd>
     ${e.data.hls && html`<dt>Cue styles</dt><dd>HLS ${e.data.hls.join(', ') || 'none'} · DASH ${e.data.dash?.join(', ') || 'none'}</dd>`}
-    <${Cue} label="Cue" b64=${e.data.cue} />
+    <${Cue} key=${e.id} label="Cue" b64=${e.data.cue} />
+    ${e.type.startsWith('signal.') && html`<${CueTags} key=${e.id} id=${id} e=${e} stream=${stream} m=${m} cancelled=${breaks.get(e.data.breakId)?.cancelled} />`}
     <dt>Data</dt><dd><pre>${JSON.stringify(e.data, null, 2)}</pre></dd>
   </dl></div>`;
 }

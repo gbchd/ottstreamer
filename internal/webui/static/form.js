@@ -56,7 +56,7 @@ const getIn = (o, p) => p.reduce((v, k) => v?.[k], o);
 
 // setIn returns a copy of o with p set to v; undefined removes the key, so
 // the API applies its default.
-function setIn(o, p, v) {
+export function setIn(o, p, v) {
   const out = structuredClone(o);
   let cur = out;
   p.slice(0, -1).forEach((k, i) => {
@@ -195,25 +195,25 @@ function Conflict({ conflict, onLoad, onKeep }) {
 }
 
 // Err shows the API's messages for the field at path p.
-function Err({ fieldErrors, p }) {
+export function Err({ fieldErrors, p }) {
   const key = pathOf(p);
   const msgs = fieldErrors.filter((f) => f.field === key);
   return msgs.length ? html`<span class="field-error">${msgs.map((f) => f.message).join('; ')}</span>` : null;
 }
 
-function Num({ doc, set, fieldErrors, p, label, placeholder, step = 'any', cls = '' }) {
+export function Num({ doc, set, fieldErrors, p, label, placeholder, step = 'any', cls = '' }) {
   const v = getIn(doc, p);
   return html`<label class=${cls}>${label} <input type="number" step=${step} placeholder=${placeholder ?? ''} value=${v ?? ''}
     onInput=${(e) => set(p, e.target.value === '' ? undefined : Number(e.target.value))} /><${Err} fieldErrors=${fieldErrors} p=${p} /></label>`;
 }
 
-function Text({ doc, set, fieldErrors, p, label, placeholder, cls = '' }) {
+export function Text({ doc, set, fieldErrors, p, label, placeholder, cls = '' }) {
   return html`<label class=${cls}>${label} <input value=${getIn(doc, p) ?? ''} placeholder=${placeholder ?? ''}
     onInput=${(e) => set(p, e.target.value === '' ? undefined : e.target.value)} /><${Err} fieldErrors=${fieldErrors} p=${p} /></label>`;
 }
 
 // Select stores numbers as numbers; '' removes the field (the default).
-function Select({ doc, set, fieldErrors, p, label, options, def }) {
+export function Select({ doc, set, fieldErrors, p, label, options, def }) {
   const v = getIn(doc, p);
   return html`<label>${label} <select value=${v ?? ''} onChange=${(e) => {
     const s = e.target.value;
@@ -224,12 +224,12 @@ function Select({ doc, set, fieldErrors, p, label, options, def }) {
   </select><${Err} fieldErrors=${fieldErrors} p=${p} /></label>`;
 }
 
-function Check({ doc, set, p, label }) {
-  return html`<label><input type="checkbox" checked=${Boolean(getIn(doc, p))} onChange=${(e) => set(p, e.target.checked || undefined)} /> ${label}</label>`;
+export function Check({ doc, set, fieldErrors = [], p, label }) {
+  return html`<label><input type="checkbox" checked=${Boolean(getIn(doc, p))} onChange=${(e) => set(p, e.target.checked || undefined)} /> ${label}<${Err} fieldErrors=${fieldErrors} p=${p} /></label>`;
 }
 
 // Multi edits an array of choices as checkboxes.
-function Multi({ doc, set, fieldErrors, p, label, options, hint }) {
+export function Multi({ doc, set, fieldErrors, p, label, options, hint }) {
   const v = getIn(doc, p) ?? [];
   const toggle = (o) => {
     const next = v.includes(o) ? v.filter((x) => x !== o) : options.filter((x) => x === o || v.includes(x));
@@ -318,6 +318,8 @@ function Fields(props) {
       ${isNew && html`<${Text} ...${props} p=${['id']} label="Id" placeholder="demo" />`}
       <${Text} ...${props} p=${['name']} label="Name" placeholder="Demo channel" />
       <${Multi} ...${props} p=${['spec', 'formats']} label="Formats" options=${['hls', 'dash']} />
+      <label><input type="checkbox" checked=${spec.overlay?.renditionLabel !== false}
+        onChange=${(e) => set(['spec', 'overlay', 'renditionLabel'], e.target.checked)} /> Rendition label</label>
     </section>
     <section class="fields">
       <h2>Timing</h2>
@@ -372,5 +374,5 @@ function Fields(props) {
       <${Num} ...${props} p=${['spec', 'window', 'retainSeconds']} label="Retain (s)" placeholder="300" />
       ${dash && html`<${Select} ...${props} p=${['spec', 'dash', 'addressing']} label="DASH addressing" options=${['number', 'timeline-time', 'timeline-number']} def="timeline-time" />`}
     </section>
-    <p class="muted">Overlay, fault rule seeds and anything else: Raw JSON tab.</p>`;
+    <p class="muted">Fault rule seeds and anything else: Raw JSON tab.</p>`;
 }

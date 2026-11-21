@@ -92,3 +92,22 @@ export function hex(b64) {
 }
 
 export const streamPath = (id) => '/streams/' + encodeURIComponent(id);
+
+// useCached returns {value} or {error} of load() once it settles, undefined
+// before, and keeps it by key for the page's lifetime, so load runs once
+// per key. A null key loads nothing.
+// ponytail: never evicts, one entry per cue or signal clicked; an LRU if
+// pages stay open for days.
+const pending = new Map();
+const settled = new Map();
+export function useCached(key, load) {
+  const [, rerender] = useState(0);
+  useEffect(() => {
+    if (key === null || settled.has(key)) return;
+    if (!pending.has(key)) {
+      pending.set(key, load().then((value) => ({ value }), (error) => ({ error })).then((r) => settled.set(key, r)));
+    }
+    pending.get(key).then(() => rerender((n) => n + 1));
+  }, [key]);
+  return key === null ? undefined : settled.get(key);
+}
