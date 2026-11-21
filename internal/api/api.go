@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -35,6 +36,13 @@ type StreamService interface {
 	StreamLifecycle
 }
 
+// CueDecoder decodes SCTE-35 cues.
+type CueDecoder interface {
+	// Decode returns the splice_command name of the splice_info_section in
+	// cue and the section as JSON.
+	Decode(cue []byte) (command string, section json.RawMessage, err error)
+}
+
 var _ StrictServerInterface = (*server)(nil)
 
 type server struct {
@@ -43,6 +51,7 @@ type server struct {
 	events   EventService
 	faults   FaultService
 	injector FaultInjector
+	cues     CueDecoder
 	now      func() time.Time
 	log      *slog.Logger
 }
@@ -50,8 +59,8 @@ type server struct {
 // Register adds every /api route of api/openapi.yaml to mux. Authentication
 // and CORS are the caller's middleware; the API key a request carries is the
 // actor of the events it causes.
-func Register(mux *http.ServeMux, streams StreamService, breaks BreakService, events EventService, faults FaultService, injector FaultInjector, now func() time.Time, logger *slog.Logger) {
-	srv := &server{streams: streams, breaks: breaks, events: events, faults: faults, injector: injector, now: now, log: logger}
+func Register(mux *http.ServeMux, streams StreamService, breaks BreakService, events EventService, faults FaultService, injector FaultInjector, cues CueDecoder, now func() time.Time, logger *slog.Logger) {
+	srv := &server{streams: streams, breaks: breaks, events: events, faults: faults, injector: injector, cues: cues, now: now, log: logger}
 	strict := NewStrictHandlerWithOptions(srv, nil, StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  badRequest,
 		ResponseErrorHandlerFunc: srv.writeError,

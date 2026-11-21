@@ -2,7 +2,12 @@ package api
 
 import (
 	"context"
+	"errors"
+	"slices"
+	"time"
 
+	"ottstreamer/internal/adbreak"
+	"ottstreamer/internal/event"
 	"ottstreamer/internal/stream"
 )
 
@@ -11,11 +16,73 @@ func (s *server) ListStreams(ctx context.Context, _ ListStreamsRequestObject) (L
 	if err != nil {
 		return nil, err
 	}
+	now := s.now()
 	out := make(ListStreams200JSONResponse, 0, len(list))
 	for _, st := range list {
-		out = append(out, fromStream(st))
+		sum, err := s.summary(ctx, st, now)
+		if errors.Is(err, stream.ErrNotFound) {
+			continue // deleted since the list was read
+		}
+		if err != nil {
+			return nil, err
+		}
+		v := fromStream(st)
+		out = append(out, StreamListItem{
+			Id: v.Id, Name: v.Name, Spec: v.Spec, Status: v.Status, Version: v.Version,
+			CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt, Summary: sum,
+		})
 	}
 	return out, nil
+}
+
+// summary is what the streams page shows of a stream besides the stream:
+// nil for a stopped one.
+func (s *server) summary(ctx context.Context, st stream.Stream, now time.Time) (*StreamSummary, error) {
+	e := liveEpoch(st)
+	if e == nil {
+		return nil, nil
+	}
+	edge := e.Timeline().LiveEdge(now)
+	breaks, err := s.breaks.List(ctx, st.ID)
+	if err != nil {
+		return nil, err
+	}
+	rules, err := s.faults.Rules(ctx, st.ID)
+	if err != nil {
+		return nil, err
+	}
+	late, _, err := s.events.List(ctx, st.ID, event.Query{
+		Types: []event.Type{event.SegmentLate}, From: now.Add(-time.Minute), To: now, Limit: event.MaxLimit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := &StreamSummary{LiveEdge: edge, ActiveBreak: activeBreak(breaks, edge), ActiveFaultRules: len(rules), LateSegmentsLastMinute: len(late)}
+	if i := slices.IndexFunc(breaks, func(b adbreak.Break) bool { return !b.Cancelled && b.StartSeg > edge }); i >= 0 {
+		next := fromBreak(breaks[i])
+		out.NextBreak = &next
+	}
+	return out, nil
+}
+
+// liveEpoch is the epoch a stream has a live position in: nil when stopped.
+func liveEpoch(st stream.Stream) *stream.Epoch {
+	if st.Status.State == stream.StateStopped {
+		return nil
+	}
+	return st.Status.Epoch
+}
+
+// activeBreak is the break covering segment edge, nil when none does.
+func activeBreak(breaks []adbreak.Break, edge int64) *Break {
+	var active *Break
+	for _, b := range breaks {
+		if b.Covers(edge) {
+			v := fromBreak(b)
+			active = &v
+		}
+	}
+	return active
 }
 
 func (s *server) CreateStream(ctx context.Context, req CreateStreamRequestObject) (CreateStreamResponseObject, error) {
@@ -79,7 +146,7 @@ func (s *server) GetStreamStatus(ctx context.Context, req GetStreamStatusRequest
 	}
 	now := s.now()
 	pos := GetStreamStatus200JSONResponse{State: State(st.Status.State), Now: now.UTC()}
-	if e := st.Status.Epoch; e != nil && st.Status.State != stream.StateStopped {
+	if e := liveEpoch(st); e != nil {
 		tl := e.Timeline()
 		edge, horizon := tl.LiveEdge(now), tl.FrozenHorizon(now)
 		pos.Epoch, pos.LiveEdge, pos.FrozenHorizon, pos.EndSegment = &e.Number, &edge, &horizon, e.EndSegment
@@ -87,12 +154,7 @@ func (s *server) GetStreamStatus(ctx context.Context, req GetStreamStatusRequest
 		if err != nil {
 			return nil, err
 		}
-		for _, b := range breaks {
-			if b.Covers(edge) {
-				active := fromBreak(b)
-				pos.ActiveBreak = &active
-			}
-		}
+		pos.ActiveBreak = activeBreak(breaks, edge)
 	}
 	return pos, nil
 }

@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Comcast/scte35-go/pkg/scte35"
+
 	"ottstreamer/internal/accesslog"
 	"ottstreamer/internal/adbreak"
 	"ottstreamer/internal/adbreak/adbreakmem"
@@ -53,6 +55,8 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
+	// scte35-go logs decode errors itself; GET /api/scte35 already returns them.
+	scte35.Logger = slog.NewLogLogger(logger.Handler(), slog.LevelDebug)
 	cfg, err := config.Load(os.Args[1:], os.Getenv)
 	if errors.Is(err, flag.ErrHelp) {
 		return nil
@@ -155,7 +159,7 @@ type deps struct {
 // /live handlers and /api/time, which know the segment a request is for.
 func handler(d deps) http.Handler {
 	apiMux := http.NewServeMux()
-	api.Register(apiMux, d.streams, d.breaks, d.events, d.faults, d.faults, d.now, d.logger)
+	api.Register(apiMux, d.streams, d.breaks, d.events, d.faults, d.faults, adbreakscte35.NewDecoder(), d.now, d.logger)
 	mux := http.NewServeMux()
 	mux.Handle("/api/", d.auth(accesslog.Routed(apiMux)))
 	mux.Handle("/api/time", apiMux) // open, more specific than /api/

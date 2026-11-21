@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -58,6 +59,13 @@ func newServer(t *testing.T) (*httptest.Server, *time.Time) {
 // log.
 func serve(t *testing.T, wrap func(http.Handler) http.Handler) (*httptest.Server, *time.Time) {
 	t.Helper()
+	srv, now, _ := serveEvents(t, wrap)
+	return srv, now
+}
+
+// serveEvents is serve, also returning the event log.
+func serveEvents(t *testing.T, wrap func(http.Handler) http.Handler) (*httptest.Server, *time.Time, *event.Service) {
+	t.Helper()
 	now := t0
 	repo := streammem.NewRepository()
 	clock := func() time.Time { return now }
@@ -68,11 +76,11 @@ func serve(t *testing.T, wrap func(http.Handler) http.Handler) (*httptest.Server
 	faults := fault.NewService(faultmem.NewRepository(), faulttest.Streams{Renditions: []string{"720p", "en", "sub-en"}}, events, nopMetrics{}, clock, func() int { return 0 })
 	svc := stream.NewService(repo, repo, nopRuntimes{}, breaks, faults, events, clock)
 	mux := http.NewServeMux()
-	api.Register(mux, svc, breaks, events, faults, faults, clock, logger)
+	api.Register(mux, svc, breaks, events, faults, faults, adbreakscte35.NewDecoder(), clock, logger)
 	srv := httptest.NewServer(wrap(mux))
 	t.Cleanup(srv.Close)
 	t.Cleanup(events.Close) // ends event streams, so that srv.Close does not wait for them
-	return srv, &now
+	return srv, &now, events
 }
 
 type response struct {
@@ -251,6 +259,64 @@ func TestLifecycle(t *testing.T) {
 	expect(t, do(t, srv, http.MethodDelete, "/api/streams/demo", "", "If-Match", `"1"`), http.StatusPreconditionFailed)
 	expect(t, do(t, srv, http.MethodDelete, "/api/streams/demo", ""), http.StatusNoContent)
 	expect(t, do(t, srv, http.MethodGet, "/api/streams/demo", ""), http.StatusNotFound)
+}
+
+// The demo stream has 1.92 s segments and 5 lead segments; recurring break
+// r-0 is [32,48).
+func TestListStreams_Summary(t *testing.T) {
+	srv, now, events := serveEvents(t, func(h http.Handler) http.Handler { return h })
+	expect(t, do(t, srv, http.MethodPost, "/api/streams", demo), http.StatusCreated)
+	expect(t, do(t, srv, http.MethodPost, "/api/streams", strings.Replace(demo, `"demo"`, `"idle"`, 1)), http.StatusCreated)
+	expect(t, do(t, srv, http.MethodPost, "/api/streams/demo/start", ""), http.StatusOK)
+	edge9 := t0.Add(1920 * time.Millisecond * 10)
+	for _, at := range []time.Duration{-61 * time.Second, -60 * time.Second, -time.Second, 0} {
+		*now = edge9.Add(at)
+		events.Record(t.Context(), event.Event{StreamID: "demo", Type: event.SegmentLate})
+	}
+	*now = edge9
+	expect(t, do(t, srv, http.MethodPost, "/api/streams/demo/breaks", `{"duration": 30}`), http.StatusCreated) // [15,31)
+	expect(t, do(t, srv, http.MethodPut, "/api/streams/demo/faults", `[{"id": "x", "match": {"kind": "segment"}, "action": {"delayMs": 100}}]`), http.StatusOK)
+
+	r := do(t, srv, http.MethodGet, "/api/streams", "")
+	expect(t, r, http.StatusOK)
+	var list []map[string]any
+	if err := json.Unmarshal([]byte(r.raw), &list); err != nil || len(list) != 2 {
+		t.Fatalf("list = %s, %v", r.raw, err)
+	}
+	sum, ok := list[0]["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("demo has no summary: %s", r.raw)
+	}
+	want := map[string]any{"liveEdge": 9.0, "activeBreak": nil, "activeFaultRules": 1.0, "lateSegmentsLastMinute": 2.0}
+	for k, v := range want {
+		if sum[k] != v {
+			t.Errorf("summary.%s = %v, want %v", k, sum[k], v)
+		}
+	}
+	if id := get(sum, "nextBreak", "id"); id != "1" {
+		t.Errorf("nextBreak = %v, want break 1", sum["nextBreak"])
+	}
+	if _, ok := list[1]["summary"]; ok {
+		t.Errorf("stopped stream has a summary: %v", list[1]["summary"])
+	}
+	// Besides the summary, an item is the stream as GET /api/streams/{id} has it.
+	for _, item := range list {
+		delete(item, "summary")
+		one := do(t, srv, http.MethodGet, "/api/streams/"+item["id"].(string), "")
+		if !reflect.DeepEqual(item, one.body) {
+			t.Errorf("item %v, want %v", item, one.body)
+		}
+	}
+
+	*now = t0.Add(1920 * time.Millisecond * 20) // live edge 19, in break 1
+	r = do(t, srv, http.MethodGet, "/api/streams", "")
+	expect(t, r, http.StatusOK)
+	if err := json.Unmarshal([]byte(r.raw), &list); err != nil {
+		t.Fatal(err)
+	}
+	if a, n := get(list[0]["summary"], "activeBreak", "id"), get(list[0]["summary"], "nextBreak", "id"); a != "1" || n != "r-0" {
+		t.Errorf("active %v, next %v; want 1, r-0", a, n)
+	}
 }
 
 func TestGetTime(t *testing.T) {

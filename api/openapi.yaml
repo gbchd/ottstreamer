@@ -21,7 +21,7 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: "#/components/schemas/Stream" }
+                items: { $ref: "#/components/schemas/StreamListItem" }
         default: { $ref: "#/components/responses/Error" }
     post:
       operationId: createStream
@@ -334,6 +334,26 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         default: { $ref: "#/components/responses/Error" }
 
+  /api/scte35:
+    get:
+      operationId: decodeCue
+      summary: Decode one SCTE-35 splice_info_section with scte35-go
+      parameters:
+        - name: cue
+          in: query
+          required: true
+          schema: { type: string }
+          description: 'Standard base64 (as in cueOut.base64 or the cue of a signal event) or hex with a 0x prefix (as in an HLS SCTE35-OUT attribute); URL-encode it, since base64 has + and /'
+      responses:
+        "200":
+          description: The decoded section
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecodedCue" }
+        "400": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
   /api/me:
     get:
       operationId: getMe
@@ -448,6 +468,34 @@ components:
         version: { type: integer }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+
+    StreamListItem:
+      description: A stream as GET /api/streams lists it
+      allOf:
+        - $ref: "#/components/schemas/Stream"
+        - type: object
+          properties:
+            summary:
+              allOf: [{ $ref: "#/components/schemas/StreamSummary" }]
+              x-go-type-skip-optional-pointer: false
+              description: Present for a running or ended stream, absent for a stopped one
+    StreamSummary:
+      type: object
+      required: [liveEdge, activeBreak, nextBreak, activeFaultRules, lateSegmentsLastMinute]
+      properties:
+        liveEdge: { type: integer, format: int64, description: "As GET .../status: last published segment, -1 before the first" }
+        activeBreak:
+          allOf: [{ $ref: "#/components/schemas/Break" }]
+          nullable: true
+          x-go-type-skip-optional-pointer: false
+          description: As GET .../status, the break covering the live edge
+        nextBreak:
+          allOf: [{ $ref: "#/components/schemas/Break" }]
+          nullable: true
+          x-go-type-skip-optional-pointer: false
+          description: The first break of GET .../breaks that is not cancelled and starts after the live edge
+        activeFaultRules: { type: integer, description: The number of rules GET .../faults returns }
+        lateSegmentsLastMinute: { type: integer, description: "segment.late events in the 60 s before now, counted up to 1000 (one page of GET .../events)" }
 
     Spec:
       type: object
@@ -694,6 +742,18 @@ components:
       properties:
         base64: { type: string }
         hex: { type: string }
+
+    DecodedCue:
+      type: object
+      required: [command, section]
+      properties:
+        command: { type: string, description: "splice_null, splice_schedule, splice_insert, time_signal, bandwidth_reservation or private_command", example: splice_insert }
+        section:
+          type: object
+          additionalProperties: true
+          x-go-type: json.RawMessage
+          description: The splice_info_section in scte35-go's JSON form
+          example: { "spliceCommand": { "type": 5, "spliceEventId": 7, "spliceEventCancelIndicator": true, "spliceImmediateFlag": false, "outOfNetworkIndicator": false }, "sapType": 3, "tier": 4095, "encryptedPacket": { "encryptionAlgorithm": 0, "cwIndex": 0 } }
 
     Event:
       type: object

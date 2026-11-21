@@ -1,13 +1,20 @@
 package api_test
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Comcast/scte35-go/pkg/scte35"
+
+	"ottstreamer/internal/adbreak"
+	"ottstreamer/internal/adbreak/adbreakscte35"
+	"ottstreamer/internal/stream"
 )
 
 // The demo stream has 1.92 s segments and 5 lead segments; recurring break
@@ -114,4 +121,45 @@ func TestBreaksOfStreamNeverStarted(t *testing.T) {
 	expect(t, do(t, srv, http.MethodGet, "/api/streams/demo/breaks", ""), http.StatusConflict)
 	expect(t, do(t, srv, http.MethodGet, "/api/streams/demo/breaks/1", ""), http.StatusConflict)
 	expect(t, do(t, srv, http.MethodDelete, "/api/streams/demo/breaks/1", ""), http.StatusConflict)
+}
+
+func TestDecodeCue(t *testing.T) {
+	srv, now := newServer(t)
+	expect(t, do(t, srv, http.MethodPost, "/api/streams", demo), http.StatusCreated)
+	expect(t, do(t, srv, http.MethodPost, "/api/streams/demo/start", ""), http.StatusOK)
+	*now = t0.Add(1920 * time.Millisecond * 10)
+	r := do(t, srv, http.MethodPost, "/api/streams/demo/breaks", `{"duration": 30}`)
+	expect(t, r, http.StatusCreated)
+	cancel, err := adbreakscte35.NewEncoder().Encode(adbreak.Cue{Command: stream.CommandSpliceInsert, EventID: 1, Out: true, Cancel: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		cue          string
+		out, cancels bool
+	}{
+		{get(r.body, "cueOut", "base64").(string), true, false},
+		{get(r.body, "cueIn", "hex").(string), false, false},
+		{base64.StdEncoding.EncodeToString(cancel), false, true},
+		{"0x" + hex.EncodeToString(cancel), false, true},
+	}
+	for _, tt := range tests {
+		r := do(t, srv, http.MethodGet, "/api/scte35?cue="+url.QueryEscape(tt.cue), "")
+		expect(t, r, http.StatusOK)
+		cmd := get(r.body, "section", "spliceCommand")
+		if get(r.body, "command") != "splice_insert" || get(cmd, "spliceEventId") != 1.0 ||
+			get(cmd, "outOfNetworkIndicator") != tt.out || get(cmd, "spliceEventCancelIndicator") != tt.cancels {
+			t.Errorf("%s: %s", tt.cue, r.raw)
+		}
+	}
+
+	for cue, status := range map[string]int{
+		"":                  http.StatusBadRequest,
+		"?cue=not%20base64": http.StatusUnprocessableEntity,
+		"?cue=0xZZ":         http.StatusUnprocessableEntity,
+		"?cue=" + url.QueryEscape(base64.StdEncoding.EncodeToString([]byte("garbage"))): http.StatusUnprocessableEntity,
+	} {
+		expect(t, do(t, srv, http.MethodGet, "/api/scte35"+cue, ""), status)
+	}
 }

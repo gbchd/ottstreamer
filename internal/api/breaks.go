@@ -97,6 +97,29 @@ func fromBreak(b adbreak.Break) Break {
 	}
 }
 
+func (s *server) DecodeCue(_ context.Context, req DecodeCueRequestObject) (DecodeCueResponseObject, error) {
+	b, err := cueBytes(req.Params.Cue)
+	if err != nil {
+		return nil, fmt.Errorf("%w: cue: %w", adbreak.ErrInvalid, err)
+	}
+	cmd, section, err := s.cues.Decode(b)
+	if err != nil {
+		return nil, err
+	}
+	return DecodeCue200JSONResponse{Command: cmd, Section: section}, nil
+}
+
+// cueBytes reads a cue as Cue.Hex or Cue.Base64 writes it.
+func cueBytes(s string) ([]byte, error) {
+	if h, ok := strings.CutPrefix(s, "0x"); ok {
+		return hex.DecodeString(h)
+	}
+	if h, ok := strings.CutPrefix(s, "0X"); ok {
+		return hex.DecodeString(h)
+	}
+	return base64.StdEncoding.DecodeString(s)
+}
+
 // cue writes hex the way HLS SCTE35-OUT/IN attributes do: 0x, upper case.
 func cue(b []byte) Cue {
 	return Cue{Base64: base64.StdEncoding.EncodeToString(b), Hex: "0x" + strings.ToUpper(hex.EncodeToString(b))}

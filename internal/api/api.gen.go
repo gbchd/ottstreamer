@@ -547,6 +547,19 @@ type DASH struct {
 // DASHAddressing Default timeline-time
 type DASHAddressing string
 
+// DecodedCue defines model for DecodedCue.
+type DecodedCue struct {
+	// Command splice_null, splice_schedule, splice_insert, time_signal, bandwidth_reservation or private_command
+	//
+	// Example: splice_insert
+	Command string `json:"command"`
+
+	// Section The splice_info_section in scte35-go's JSON form
+	//
+	// Example: {"encryptedPacket":{"cwIndex":0,"encryptionAlgorithm":0},"sapType":3,"spliceCommand":{"outOfNetworkIndicator":false,"spliceEventCancelIndicator":true,"spliceEventId":7,"spliceImmediateFlag":false,"type":5},"tier":4095}
+	Section json.RawMessage `json:"section"`
+}
+
 // Epoch defines model for Epoch.
 type Epoch struct {
 	Ast        time.Time `json:"ast"`
@@ -778,6 +791,20 @@ type Stream struct {
 	Version   int       `json:"version"`
 }
 
+// StreamListItem A stream as GET /api/streams lists it
+type StreamListItem struct {
+	CreatedAt time.Time `json:"createdAt"`
+	Id        string    `json:"id"`
+	Name      string    `json:"name"`
+	Spec      Spec      `json:"spec"`
+	Status    Status    `json:"status"`
+
+	// Summary Present for a running or ended stream, absent for a stopped one
+	Summary   *StreamSummary `json:"summary,omitempty"`
+	UpdatedAt time.Time      `json:"updatedAt"`
+	Version   int            `json:"version"`
+}
+
 // StreamPosition defines model for StreamPosition.
 type StreamPosition struct {
 	ActiveBreak *Break `json:"activeBreak,omitempty"`
@@ -795,6 +822,24 @@ type StreamPosition struct {
 	LiveEdge *int64    `json:"liveEdge,omitempty"`
 	Now      time.Time `json:"now"`
 	State    State     `json:"state"`
+}
+
+// StreamSummary defines model for StreamSummary.
+type StreamSummary struct {
+	// ActiveBreak As GET .../status, the break covering the live edge
+	ActiveBreak *Break `json:"activeBreak"`
+
+	// ActiveFaultRules The number of rules GET .../faults returns
+	ActiveFaultRules int `json:"activeFaultRules"`
+
+	// LateSegmentsLastMinute segment.late events in the 60 s before now, counted up to 1000 (one page of GET .../events)
+	LateSegmentsLastMinute int `json:"lateSegmentsLastMinute"`
+
+	// LiveEdge As GET .../status: last published segment, -1 before the first
+	LiveEdge int64 `json:"liveEdge"`
+
+	// NextBreak The first break of GET .../breaks that is not cancelled and starts after the live edge
+	NextBreak *Break `json:"nextBreak"`
 }
 
 // Subtitle defines model for Subtitle.
@@ -883,6 +928,12 @@ type IfMatch = string
 // StreamID defines model for StreamID.
 type StreamID = string
 
+// DecodeCueParams defines parameters for DecodeCue.
+type DecodeCueParams struct {
+	// Cue Standard base64 (as in cueOut.base64 or the cue of a signal event) or hex with a 0x prefix (as in an HLS SCTE35-OUT attribute); URL-encode it, since base64 has + and /
+	Cue string `form:"cue" json:"cue"`
+}
+
 // DeleteStreamParams defines parameters for DeleteStream.
 type DeleteStreamParams struct {
 	// IfMatch The ETag of the stream, `"<version>"`. Required on PUT (428 without it).
@@ -960,6 +1011,9 @@ type ServerInterface interface {
 	// GetMe The API key the request carries, so a client can hide what its role may not do
 	// (GET /api/me)
 	GetMe(w http.ResponseWriter, r *http.Request)
+	// DecodeCue Decode one SCTE-35 splice_info_section with scte35-go
+	// (GET /api/scte35)
+	DecodeCue(w http.ResponseWriter, r *http.Request, params DecodeCueParams)
 	// ListStreams List streams with their status
 	// (GET /api/streams)
 	ListStreams(w http.ResponseWriter, r *http.Request)
@@ -1033,6 +1087,39 @@ func (siw *ServerInterfaceWrapper) GetMe(w http.ResponseWriter, r *http.Request)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetMe(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DecodeCue operation middleware
+func (siw *ServerInterfaceWrapper) DecodeCue(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DecodeCueParams
+
+	// ------------- Required query parameter "cue" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "cue", r.URL.Query(), &params.Cue, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cue"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cue", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DecodeCue(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1857,6 +1944,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/streams/{id}/faults", wrapper.ClearFaults)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/streams/{id}/faults", wrapper.GetFaults)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/api/streams/{id}/faults", wrapper.ReplaceFaults)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/scte35", wrapper.DecodeCue)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/me", wrapper.GetMe)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/time", wrapper.GetTime)
 
@@ -1903,6 +1991,73 @@ func (response GetMedefaultJSONResponse) VisitGetMeResponse(w http.ResponseWrite
 	return err
 }
 
+type DecodeCueRequestObject struct {
+	Params DecodeCueParams
+}
+
+type DecodeCueResponseObject interface {
+	VisitDecodeCueResponse(w http.ResponseWriter) error
+}
+
+type DecodeCue200JSONResponse DecodedCue
+
+func (response DecodeCue200JSONResponse) VisitDecodeCueResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DecodeCue400JSONResponse struct{ ErrorJSONResponse }
+
+func (response DecodeCue400JSONResponse) VisitDecodeCueResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DecodeCue422JSONResponse Error
+
+func (response DecodeCue422JSONResponse) VisitDecodeCueResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DecodeCuedefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response DecodeCuedefaultJSONResponse) VisitDecodeCueResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListStreamsRequestObject struct {
 }
 
@@ -1910,7 +2065,7 @@ type ListStreamsResponseObject interface {
 	VisitListStreamsResponse(w http.ResponseWriter) error
 }
 
-type ListStreams200JSONResponse []Stream
+type ListStreams200JSONResponse []StreamListItem
 
 func (response ListStreams200JSONResponse) VisitListStreamsResponse(w http.ResponseWriter) error {
 
@@ -3088,6 +3243,9 @@ type StrictServerInterface interface {
 	// GetMe The API key the request carries, so a client can hide what its role may not do
 	// (GET /api/me)
 	GetMe(ctx context.Context, request GetMeRequestObject) (GetMeResponseObject, error)
+	// DecodeCue Decode one SCTE-35 splice_info_section with scte35-go
+	// (GET /api/scte35)
+	DecodeCue(ctx context.Context, request DecodeCueRequestObject) (DecodeCueResponseObject, error)
 	// ListStreams List streams with their status
 	// (GET /api/streams)
 	ListStreams(ctx context.Context, request ListStreamsRequestObject) (ListStreamsResponseObject, error)
@@ -3203,6 +3361,32 @@ func (sh *strictHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetMeResponseObject); ok {
 		if err := validResponse.VisitGetMeResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DecodeCue operation middleware
+func (sh *strictHandler) DecodeCue(w http.ResponseWriter, r *http.Request, params DecodeCueParams) {
+	var request DecodeCueRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DecodeCue(ctx, request.(DecodeCueRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DecodeCue")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DecodeCueResponseObject); ok {
+		if err := validResponse.VisitDecodeCueResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
