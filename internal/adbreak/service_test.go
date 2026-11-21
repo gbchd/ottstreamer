@@ -294,6 +294,29 @@ func TestStopTrims(t *testing.T) {
 	}
 }
 
+func TestStopTrimsRecurring(t *testing.T) {
+	f := newFixture(t, recurringSpec)
+	if _, err := f.breaks.Delete(t.Context(), "s", "r-1"); err != nil { // an override, cancelled already
+		t.Fatal(err)
+	}
+	f.edge(8) // horizon 12, in r-0 [10,15)
+	f.events.Events()
+	if _, err := f.streams.Stop(t.Context(), "s"); err != nil { // end segment 12
+		t.Fatal(err)
+	}
+	events := f.events.Events()
+	got := make([]string, 0, len(events))
+	for _, e := range events {
+		got = append(got, fmt.Sprintf("%s %v %d", e.Type, e.Data["breakId"], *e.Segment))
+	}
+	// List showed up to 3 periods past the horizon, [13,103): r-4 [130,135)
+	// gets no event, nor does r-1, unchanged.
+	want := []string{"break.shortened r-0 13", "break.cancelled r-2 70", "break.cancelled r-3 100", "stream.stopped <nil> 12"}
+	if !slices.Equal(got, want) {
+		t.Errorf("events of the stop:\n got %q\nwant %q", got, want)
+	}
+}
+
 // recurringSpec: break k is [10+30k, 15+30k) on 2 s segments.
 func recurringSpec(s *stream.Spec) {
 	s.Ads.Recurring = &stream.Recurring{Every: time.Minute, Duration: 10 * time.Second, Offset: 20 * time.Second}

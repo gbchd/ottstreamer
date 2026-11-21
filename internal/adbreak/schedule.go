@@ -140,7 +140,9 @@ func (s *Service) Delete(ctx context.Context, streamID, breakID string) (Break, 
 // starting after it are cancelled, and one active at it ends at endSeg+1, so
 // endSeg, already frozen, stays its last ad segment. Its cue-in would fall
 // on endSeg+1, which is never produced. Recurring breaks without an override
-// are trimmed the same way when computed, from the epoch's end segment.
+// are trimmed the same way when computed, from the epoch's end segment; Trim
+// records their change for those that List or the default /timeline range
+// showed at the stop, so the log does not run on to infinity.
 func (s *Service) Trim(ctx context.Context, streamID string, epoch int, endSeg int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -157,6 +159,16 @@ func (s *Service) Trim(ctx context.Context, streamID string, epoch int, endSeg i
 			if err := s.repo.Save(ctx, t); err != nil {
 				return fmt.Errorf("save break %s: %w", b.ID, err)
 			}
+			s.events.Record(ctx, sn.changeEvent(t))
+		}
+	}
+	if r := sn.ads.Recurring; r != nil {
+		open := endSeg + 1
+		to := max(open+listedPeriods*sn.tl.SegsFor(r.Every), sn.tl.SegAtOrAfter(s.now().Add(sn.dvr))+1)
+		sn.tl.EndSeg = -1 // the recurring breaks as they were before the stop
+		// storedTo 0: only the computed breaks, overrides were trimmed above.
+		for _, b := range sn.merge(stored, open, to, 0) {
+			t, _ := b.stopped(open) // b reaches past open, so it changes
 			s.events.Record(ctx, sn.changeEvent(t))
 		}
 	}

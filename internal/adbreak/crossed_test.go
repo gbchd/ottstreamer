@@ -69,6 +69,10 @@ func TestScheduleEvents(t *testing.T) {
 		"20 break.cancelled 1 manual",
 		"45 break.scheduled 3 manual",
 		"51 break.shortened 3 manual",
+		// Recurring breaks the stop cancels, up to 3 periods past it.
+		"70 break.cancelled r-2 recurring",
+		"100 break.cancelled r-3 recurring",
+		"130 break.cancelled r-4 recurring",
 	}
 	var breaks []event.Event
 	for _, e := range got {
