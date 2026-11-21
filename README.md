@@ -44,7 +44,7 @@ curl -s -o seg.m4s localhost:18080/live/demo/720p/1.m4s
 cat init.mp4 seg.m4s > 720p-1.mp4 && ffprobe -v error -count_frames -show_entries stream=codec_name,width,height,nb_read_frames 720p-1.mp4
 ```
 
-Play `http://localhost:18080/live/demo/master.m3u8` or `.../manifest.mpd` in any HLS or DASH player; `/live` is open to every origin. Stop with `POST /api/streams/demo/stop`, or SIGTERM the process.
+Play `http://localhost:18080/live/demo/master.m3u8` or `.../manifest.mpd` in any HLS or DASH player; `/live` is open to every origin. Or open `http://localhost:18080/ui/`, sign in with the key (`secret`), and watch the stream, its timeline, breaks and fault rules in the browser (`-ui=false` turns the UI off). Stop with `POST /api/streams/demo/stop`, or SIGTERM the process.
 
 Every change and every break or signal the live edge crosses goes to the stream's event log (the last 10 000 events per stream, kept after a delete):
 

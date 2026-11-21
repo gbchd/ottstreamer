@@ -23,6 +23,7 @@ type Config struct {
 	ProducerParallelism int
 	CORSAPIOrigins      []string
 	ShutdownDelay       time.Duration
+	UI                  bool
 }
 
 // Load parses args, then applies every non-empty ORIGIN_* variable on top.
@@ -41,10 +42,11 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.IntVar(&c.ProducerParallelism, "producer-parallelism", 2, "segments of one stream encoded at once (ORIGIN_PRODUCER_PARALLELISM)")
 	fs.StringVar(&origins, "cors-api-origins", "", "comma-separated origins allowed to call /api from a browser (ORIGIN_CORS_API_ORIGINS)")
 	fs.DurationVar(&c.ShutdownDelay, "shutdown-delay", 0, "on SIGTERM, how long /readyz answers 503 before the server stops accepting connections (ORIGIN_SHUTDOWN_DELAY)")
+	fs.BoolVar(&c.UI, "ui", true, "serve the web UI at /ui/ (ORIGIN_UI)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
-	for _, f := range []string{"listen", "api-keys", "ffmpeg", "ffmpeg-version", "tmp", "cache-bytes", "max-ffmpeg", "producer-parallelism", "cors-api-origins", "shutdown-delay"} {
+	for _, f := range []string{"listen", "api-keys", "ffmpeg", "ffmpeg-version", "tmp", "cache-bytes", "max-ffmpeg", "producer-parallelism", "cors-api-origins", "shutdown-delay", "ui"} {
 		env := "ORIGIN_" + strings.ToUpper(strings.ReplaceAll(f, "-", "_"))
 		if v := getenv(env); v != "" {
 			if err := fs.Set(f, v); err != nil {

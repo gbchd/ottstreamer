@@ -38,6 +38,7 @@ import (
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/stream/streammem"
 	"ottstreamer/internal/ulid"
+	"ottstreamer/internal/webui"
 )
 
 // eventsPerStream is how many events the log keeps per stream.
@@ -111,7 +112,7 @@ func run(logger *slog.Logger) error {
 		Addr: cfg.Listen,
 		Handler: handler(deps{
 			auth: auth, apiOrigins: cfg.CORSAPIOrigins, streams: streams, breaks: breaks, events: events, faults: faults, mgr: mgr, repo: repo,
-			ready: ready, metrics: met, now: time.Now, logger: logger,
+			ready: ready, metrics: met, now: time.Now, logger: logger, ui: cfg.UI,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -146,6 +147,7 @@ type deps struct {
 	metrics    *metrics.Metrics
 	now        func() time.Time
 	logger     *slog.Logger
+	ui         bool
 }
 
 // handler is the request pipeline: recover > request ID, access log and
@@ -161,7 +163,11 @@ func handler(d deps) http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	mux.Handle("GET /readyz", d.ready)
 	mux.Handle("GET /metrics", d.metrics.Handler())
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ottstreamer origin\n")) })
+	if d.ui {
+		webui.Register(mux)
+	} else {
+		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ottstreamer origin\n")) })
+	}
 	return recoverer(d.logger, accesslog.New(d.logger, d.metrics, cors.New(d.apiOrigins, mux)))
 }
 
