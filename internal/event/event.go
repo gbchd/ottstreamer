@@ -7,6 +7,7 @@ import (
 	"cmp"
 	"context"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -15,7 +16,7 @@ type Type string
 
 const (
 	StreamCreated Type = "stream.created"
-	StreamUpdated Type = "stream.updated" // data: fields, the changed field paths
+	StreamUpdated Type = "stream.updated" // data: fields, the changed field paths; changes, a stream.Change
 	StreamDeleted Type = "stream.deleted"
 	StreamStarted Type = "stream.started"
 	StreamStopped Type = "stream.stopped"
@@ -32,7 +33,7 @@ const (
 	SignalCueIn     Type = "signal.cue_in"
 	SignalCancel    Type = "signal.cancel"
 
-	FaultsUpdated Type = "faults.updated" // data: rules, the IDs of the new rule set
+	FaultsUpdated Type = "faults.updated" // data: rules, the IDs of the new rule set; expired, the IDs a TTL removed
 	FaultInjected Type = "fault.injected" // data: rule, actions, count, minute; one per rule and minute
 
 	SegmentLate    Type = "segment.late"
@@ -74,7 +75,7 @@ func Actor(ctx context.Context) string {
 type Query struct {
 	After    string    // cursor: only events with a greater ID
 	From, To time.Time // At in [From, To); a zero bound is open
-	Types    []Type    // empty: every type
+	Types    []Type    // empty: every type; "<group>.*" selects a whole group
 	Limit    int       // page size
 }
 
@@ -83,5 +84,12 @@ func (q Query) Match(e Event) bool {
 	return e.ID > q.After &&
 		(q.From.IsZero() || !e.At.Before(q.From)) &&
 		(q.To.IsZero() || e.At.Before(q.To)) &&
-		(len(q.Types) == 0 || slices.Contains(q.Types, e.Type))
+		(len(q.Types) == 0 || slices.ContainsFunc(q.Types, e.Type.is))
+}
+
+// is reports whether t is selected by p: p itself, or "<group>.*" for t in
+// that group.
+func (t Type) is(p Type) bool {
+	group, ok := strings.CutSuffix(string(p), ".*")
+	return t == p || ok && strings.HasPrefix(string(t), group+".")
 }

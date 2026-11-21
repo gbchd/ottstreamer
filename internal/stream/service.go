@@ -144,6 +144,7 @@ func (svc *Service) Replace(ctx context.Context, id, name string, spec Spec, ifM
 		return Stream{}, ErrVersionMismatch
 	}
 	fields := changed(s, name, spec)
+	change := Change{Old: Stream{Name: s.Name, Spec: s.Spec}, New: Stream{Name: name, Spec: spec}}
 	s.Name, s.Spec, s.UpdatedAt = name, spec, svc.now()
 	if e := s.Status.Epoch; e != nil {
 		e.Spec.Window = spec.Window
@@ -153,8 +154,15 @@ func (svc *Service) Replace(ctx context.Context, id, name string, spec Spec, ifM
 	if err != nil {
 		return Stream{}, err
 	}
-	svc.record(ctx, s, event.StreamUpdated, nil, map[string]any{"fields": fields, "pendingChanges": s.Status.PendingChanges})
+	svc.record(ctx, s, event.StreamUpdated, nil, map[string]any{"fields": fields, "changes": change, "pendingChanges": s.Status.PendingChanges})
 	return s, nil
+}
+
+// Change is data["changes"] of a stream.updated event: the name and spec
+// before and after, as streams holding only those. An adapter renders the
+// value of each path of data["fields"] in both.
+type Change struct {
+	Old, New Stream
 }
 
 // changed returns the paths, as in the stream resource, of the fields that

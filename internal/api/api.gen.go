@@ -569,7 +569,9 @@ type Event struct {
 	Actor string    `json:"actor"`
 	At    time.Time `json:"at"`
 
-	// Data Example: {"breakId":"7","durationSeconds":30,"eventId":7,"source":"manual"}
+	// Data Depends on the type. stream.updated has fields, the changed paths of the stream resource, and changes, an object with one {old, new} per path holding the values as the stream resource writes them, e.g. {"spec.fps": {"old": 25, "new": 30}}.
+	//
+	// Example: {"breakId":"7","durationSeconds":30,"eventId":7,"source":"manual"}
 	Data map[string]interface{} `json:"data"`
 
 	// Epoch Null for a stream event before its first start
@@ -901,7 +903,7 @@ type ListEventsParams struct {
 	// To Events before this time
 	To time.Time `form:"to,omitempty" json:"to,omitempty"`
 
-	// Types Comma-separated event types, e.g. break.started,break.ended
+	// Types Comma-separated event types, e.g. break.started,break.ended; "<group>.*" selects a whole group, e.g. break.*,signal.*
 	Types []string `form:"types,omitempty" json:"types,omitempty"`
 
 	// Cursor The next cursor of the previous page

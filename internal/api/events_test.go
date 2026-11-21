@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -100,6 +102,34 @@ func TestListEvents(t *testing.T) {
 	r := do(t, srv, http.MethodGet, "/api/streams/never/events", "", bearer...)
 	if expect(t, r, http.StatusOK); r.raw != `{"events":[],"next":null}`+"\n" {
 		t.Errorf("unknown stream: %s", r.raw)
+	}
+}
+
+func TestListEvents_streamUpdated(t *testing.T) {
+	srv, _ := newAuthServer(t)
+	before := do(t, srv, http.MethodGet, "/api/streams/demo", "", bearer...)
+	spec := strings.Replace(demoSpec, `3000}],`, `4000}], "fps": 50,`, 1)
+	after := do(t, srv, http.MethodPut, "/api/streams/demo", `{"name": "Renamed", "spec": `+spec+`}`, append([]string{"If-Match", `"2"`}, bearer...)...)
+	expect(t, after, http.StatusOK)
+
+	p := list(t, srv, "?types=stream.*")
+	if got := p.types(); !slices.Equal(got, []string{"stream.created", "stream.started", "stream.updated"}) {
+		t.Fatalf("types=stream.* gives %v", got)
+	}
+	data := p.Events[2].Data
+	if got := fmt.Sprint(data["fields"]); got != "[name spec.fps spec.video]" {
+		t.Errorf("fields = %s", got)
+	}
+	// Each value as the stream resource holds it, before and after.
+	for path, keys := range map[string][]any{"name": {"name"}, "spec.fps": {"spec", "fps"}, "spec.video": {"spec", "video"}} {
+		got := get(data, "changes", path)
+		old, nw := get(before.body, keys...), get(after.body, keys...)
+		if !reflect.DeepEqual(get(got, "old"), old) || !reflect.DeepEqual(get(got, "new"), nw) || reflect.DeepEqual(old, nw) {
+			t.Errorf("changes[%s] = %v, want old %v new %v", path, got, old, nw)
+		}
+	}
+	if get(data, "changes", "spec.fps", "new") != 50.0 || len(get(data, "changes").(map[string]any)) != 3 {
+		t.Errorf("changes = %v", get(data, "changes"))
 	}
 }
 

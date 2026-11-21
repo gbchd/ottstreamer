@@ -232,7 +232,7 @@ paths:
           style: form
           explode: false
           schema: { type: array, items: { type: string } }
-          description: Comma-separated event types, e.g. break.started,break.ended
+          description: 'Comma-separated event types, e.g. break.started,break.ended; "<group>.*" selects a whole group, e.g. break.*,signal.*'
         - { name: cursor, in: query, schema: { type: string }, description: The next cursor of the previous page }
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000 }, description: "Default 100, at most 1000" }
       responses:
@@ -709,6 +709,10 @@ components:
         data:
           type: object
           additionalProperties: true
+          description: >-
+            Depends on the type. stream.updated has fields, the changed paths of the stream
+            resource, and changes, an object with one {old, new} per path holding the values
+            as the stream resource writes them, e.g. {"spec.fps": {"old": 25, "new": 30}}.
           example: { breakId: "7", eventId: 7, durationSeconds: 30, source: manual }
     EventPage:
       type: object

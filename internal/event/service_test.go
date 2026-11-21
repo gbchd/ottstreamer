@@ -30,6 +30,9 @@ func TestQuery_Match(t *testing.T) {
 		{"to later", event.Query{To: t0.Add(time.Millisecond)}, true},
 		{"its type", event.Query{Types: []event.Type{event.BreakEnded, event.BreakStarted}}, true},
 		{"other types", event.Query{Types: []event.Type{event.BreakEnded}}, false},
+		{"its group", event.Query{Types: []event.Type{"signal.*", "break.*"}}, true},
+		{"another group", event.Query{Types: []event.Type{"stream.*"}}, false},
+		{"a group prefixing its own", event.Query{Types: []event.Type{"brea.*", "break"}}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

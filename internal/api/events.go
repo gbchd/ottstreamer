@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
+	"strings"
 	"time"
 
 	"ottstreamer/internal/apikey"
@@ -168,14 +170,44 @@ func fromEvents(events []event.Event) []Event {
 }
 
 func fromEvent(e event.Event) Event {
-	out := Event{Id: e.ID, StreamId: e.StreamID, At: e.At.UTC(), Segment: e.Segment, Type: string(e.Type), Actor: e.Actor, Data: e.Data}
+	out := Event{Id: e.ID, StreamId: e.StreamID, At: e.At.UTC(), Segment: e.Segment, Type: string(e.Type), Actor: e.Actor, Data: map[string]any{}}
 	if e.Epoch != 0 {
 		out.Epoch = &e.Epoch
 	}
-	if out.Data == nil {
-		out.Data = map[string]any{}
+	maps.Copy(out.Data, e.Data) // a copy: the event's own data never changes
+	if c, ok := e.Data["changes"].(stream.Change); ok {
+		fields, _ := e.Data["fields"].([]string)
+		out.Data["changes"] = fromChange(c, fields)
 	}
 	return out
+}
+
+// fromChange returns {path: {old, new}} for each path, with the values the
+// stream resource holds there.
+func fromChange(c stream.Change, paths []string) map[string]any {
+	old, nw := resource(c.Old), resource(c.New)
+	out := make(map[string]any, len(paths))
+	for _, p := range paths {
+		out[p] = map[string]any{"old": at(old, p), "new": at(nw, p)}
+	}
+	return out
+}
+
+// resource returns s as the JSON of the stream resource, decoded into maps.
+func resource(s stream.Stream) any {
+	b, _ := json.Marshal(fromStream(s)) // cannot fail: plain values, durations never NaN
+	var v any
+	_ = json.Unmarshal(b, &v)
+	return v
+}
+
+// at returns the value at a dotted path of v, nil if there is none.
+func at(v any, path string) any {
+	for k := range strings.SplitSeq(path, ".") {
+		m, _ := v.(map[string]any)
+		v = m[k]
+	}
+	return v
 }
 
 // cursor is next as a nullable JSON string.

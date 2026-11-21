@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"testing"
@@ -298,7 +299,17 @@ func TestService_events(t *testing.T) {
 		if ev.Segment != nil {
 			line += fmt.Sprintf(" segment %d", *ev.Segment)
 		}
-		if line += fmt.Sprintf(" %v", ev.Data); line != want[i] {
+		data := maps.Clone(ev.Data)
+		if c, ok := data["changes"].(stream.Change); ok || ev.Type == event.StreamUpdated {
+			delete(data, "changes")
+			if old := (stream.Stream{Name: "demo", Spec: s.Spec}); !reflect.DeepEqual(c.Old, old) {
+				t.Errorf("changes.Old = %+v, want %+v", c.Old, old)
+			}
+			if c.New.Name != "renamed" || !reflect.DeepEqual(c.New.Spec, spec) {
+				t.Errorf("changes.New = %+v, want renamed with %+v", c.New, spec)
+			}
+		}
+		if line += fmt.Sprintf(" %v", data); line != want[i] {
 			t.Errorf("event %d:\n got %s\nwant %s", i, line, want[i])
 		}
 	}
