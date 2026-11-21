@@ -77,6 +77,7 @@ func (m *Manager) fragment(ctx context.Context, rt *Runtime, t Track, n int64) (
 		f.BaseTime = uint64(first * int64(t.FrameSize)) //nolint:gosec // n >= 0, so first >= 0
 		f.SampleDur = uint32(t.FrameSize)               //nolint:gosec // 960..1536
 		return f, nil
+	case KindVideo: // below
 	}
 
 	set, err := m.segmentSet(ctx, rt, n)

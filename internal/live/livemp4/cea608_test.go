@@ -110,7 +110,7 @@ func avcSample(idr bool) []byte {
 			}
 			nal = []byte{0x41, 0x9A}
 		}
-		b = binary.BigEndian.AppendUint32(b, uint32(len(nal))) //nolint:gosec // tiny test NALs
+		b = binary.BigEndian.AppendUint32(b, uint32(len(nal)))
 		b = append(b, nal...)
 	}
 	return b
@@ -183,7 +183,7 @@ func TestWithCaptions_field2AndChannel2(t *testing.T) {
 func TestWithCaptions_hevc(t *testing.T) {
 	var sample []byte
 	for _, nal := range [][]byte{{32 << 1, 1, 0xAA}, {33 << 1, 1, 0xBB}, {34 << 1, 1, 0xCC}, {19 << 1, 1, 0xAF}} { // VPS, SPS, PPS, IDR_W_RADL
-		sample = binary.BigEndian.AppendUint32(sample, uint32(len(nal))) //nolint:gosec // tiny test NALs
+		sample = binary.BigEndian.AppendUint32(sample, uint32(len(nal)))
 		sample = append(sample, nal...)
 	}
 	f := live.Fragment{Codec: "hvc1.1.6.L93.90", SampleDur: 3600, CCChannel: "CC1", Samples: []live.Sample{{Data: sample, Sync: true}}}

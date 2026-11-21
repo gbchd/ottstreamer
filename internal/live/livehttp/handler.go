@@ -319,8 +319,9 @@ func mimeType(t live.Track) string {
 		return "video/mp4"
 	case live.KindAudio:
 		return "audio/mp4"
+	default:
+		return "application/mp4"
 	}
-	return "application/mp4"
 }
 
 // serve writes body with Range support (206), throttled or truncated as a

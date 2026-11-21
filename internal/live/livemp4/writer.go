@@ -161,6 +161,10 @@ func fillerHEVC(n int) []byte {
 // trailing bits that every non-empty OBU other than tile data ends with
 // (AV1 spec 5.3.1). obu_size takes 1 byte up to n = 129, else a fixed
 // 4-byte leb128, so every n >= 2 is reachable.
+//
+// The AV1-ISOBMFF binding (v1.3.0, 2.4) says OBU_PADDING SHOULD NOT be used
+// in samples. We pad anyway, on purpose: exact segment sizes are what make
+// ABR tests meaningful, and ffmpeg and dav1d skip the padding.
 func paddingOBU(n int) []byte {
 	width := 1
 	if n > 129 {

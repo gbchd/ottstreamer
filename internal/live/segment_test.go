@@ -202,10 +202,10 @@ func TestManager_WriteSegment_retry(t *testing.T) {
 	}
 }
 
-// subtitled returns running(id) with an English WebVTT and a French IMSC1
+// subtitled returns running("a") with an English WebVTT and a French IMSC1
 // track, segments of seg and the clock in zone.
-func subtitled(id string, seg time.Duration, zone string) stream.Stream {
-	s := running(id, ast)
+func subtitled(seg time.Duration, zone string) stream.Stream {
+	s := running("a", ast)
 	s.Spec.Subtitles = []stream.Subtitle{
 		{ID: "sub-en", Lang: "en", Format: stream.SubtitleWebVTT, Default: true},
 		{ID: "sub-fr", Lang: "fr", Format: stream.SubtitleIMSC1},
@@ -217,7 +217,7 @@ func subtitled(id string, seg time.Duration, zone string) stream.Stream {
 
 func TestManager_textTracks(t *testing.T) {
 	h := newHarness(nil)
-	rt := h.add(t, subtitled("a", 2*time.Second, "UTC"))
+	rt := h.add(t, subtitled(2*time.Second, "UTC"))
 	for _, want := range []Track{
 		{ID: "sub-en", Kind: KindText, Timescale: 90000, Codec: CodecWebVTT, Lang: "en", Init: []byte("init wvtt en")},
 		{ID: "sub-fr", Kind: KindText, Timescale: 90000, Codec: CodecIMSC1, Lang: "fr", Init: []byte("init stpp.ttml.im1t fr")},
@@ -269,7 +269,7 @@ func TestManager_Cues(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(nil)
-			h.add(t, subtitled("a", tt.seg, tt.zone))
+			h.add(t, subtitled(tt.seg, tt.zone))
 			h.sched.set(tt.breaks...)
 			got, err := h.m.Cues(t.Context(), "a", tt.rendition, tt.n)
 			if err != nil {
@@ -284,7 +284,7 @@ func TestManager_Cues(t *testing.T) {
 
 func TestManager_Cues_notFound(t *testing.T) {
 	h := newHarness(nil)
-	h.add(t, subtitled("a", 2*time.Second, "UTC"))
+	h.add(t, subtitled(2*time.Second, "UTC"))
 	h.m.End("a", 5)
 	for _, tc := range []struct {
 		rendition string
@@ -298,7 +298,7 @@ func TestManager_Cues_notFound(t *testing.T) {
 
 func TestManager_WriteSegment_text(t *testing.T) {
 	h := newHarness(nil)
-	h.add(t, subtitled("a", 2*time.Second, "UTC"))
+	h.add(t, subtitled(2*time.Second, "UTC"))
 	if err := h.m.WriteSegment(t.Context(), &strings.Builder{}, "a", "sub-fr", 3); err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +336,7 @@ func TestManager_WriteSegment_captions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(nil)
-			s := subtitled("a", tt.seg, "UTC")
+			s := subtitled(tt.seg, "UTC")
 			s.Spec.CEA608 = &stream.CEA608{Channel: "CC3", Lang: "en"}
 			s.Status.Epoch.Spec = s.Spec.Clone()
 			h.add(t, s)
