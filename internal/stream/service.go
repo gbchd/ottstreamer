@@ -175,6 +175,7 @@ func changed(s Stream, name string, spec Spec) []string {
 		{"spec.video", slices.Equal(a.Video, spec.Video)},
 		{"spec.audio", slices.Equal(a.Audio, spec.Audio)},
 		{"spec.subtitles", slices.Equal(a.Subtitles, spec.Subtitles)},
+		{"spec.captions", reflect.DeepEqual(a.CEA608, spec.CEA608)},
 		{"spec.dash.addressing", a.DASHAddressing == spec.DASHAddressing},
 		{"spec.ads", reflect.DeepEqual(a.Ads, spec.Ads)},
 		{"spec.window.dvrSeconds", a.Window.DVR == spec.Window.DVR},

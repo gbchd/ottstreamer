@@ -85,6 +85,7 @@ func TestSpec_Validate(t *testing.T) {
 				{ID: "sub-fr", Lang: "fr", Format: stream.SubtitleIMSC1},
 			}
 		}, nil},
+		{"captions", func(s *stream.Spec) { s.CEA608 = &stream.CEA608{Lang: "en"} }, nil},
 		{"two audio groups", func(s *stream.Spec) {
 			s.Audio = append(s.Audio, stream.Audio{ID: "en-low", Lang: "en", Channels: 2, BitrateKbps: 64, Group: "low", Default: true})
 		}, nil},
@@ -148,6 +149,8 @@ func TestSpec_Validate(t *testing.T) {
 		{"bad subtitle track", func(s *stream.Spec) {
 			s.Subtitles = []stream.Subtitle{{ID: "720p", Lang: "english!", Format: "srt"}}
 		}, []string{"spec.subtitles[0].id", "spec.subtitles[0].lang", "spec.subtitles[0].format"}},
+		{"bad captions", func(s *stream.Spec) { s.CEA608 = &stream.CEA608{Channel: "CC5", Lang: "english!"} },
+			[]string{"spec.captions.cea608.channel", "spec.captions.cea608.lang"}},
 		{"two default subtitle tracks", func(s *stream.Spec) {
 			s.Subtitles = []stream.Subtitle{
 				{ID: "sub-en", Lang: "en", Format: stream.SubtitleWebVTT, Default: true},

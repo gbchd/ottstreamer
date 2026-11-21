@@ -56,6 +56,9 @@ func (s *Spec) setDefaults() {
 	if s.DASHAddressing == "" {
 		s.DASHAddressing = AddressingTimelineTime
 	}
+	if s.CEA608 != nil && s.CEA608.Channel == "" {
+		s.CEA608.Channel = "CC1"
+	}
 	for i := range s.Video {
 		v := &s.Video[i]
 		if v.Codec == "" {
@@ -180,6 +183,14 @@ func (s Spec) validate(v *ValidationError) {
 	s.validateVideo(v, ids)
 	s.validateAudio(v, ids)
 	s.validateSubtitles(v, ids)
+	if c := s.CEA608; c != nil {
+		if !slices.Contains([]string{"CC1", "CC2", "CC3", "CC4"}, c.Channel) {
+			v.add("spec.captions.cea608.channel", `must be "CC1", "CC2", "CC3" or "CC4"`)
+		}
+		if !langPattern.MatchString(c.Lang) {
+			v.add("spec.captions.cea608.lang", "must be a BCP 47 language tag")
+		}
+	}
 	switch s.DASHAddressing {
 	case AddressingNumber, AddressingTimelineTime, AddressingTimelineNumber:
 	default:

@@ -42,6 +42,7 @@ const demoSpec = `{
   "video": [{"id": "720p", "width": 1280, "height": 720, "bitrateKbps": 3000}],
   "audio": [{"id": "en", "lang": "en", "channels": 2, "bitrateKbps": 128, "default": true}],
   "subtitles": [{"id": "sub-en", "lang": "en", "name": "English", "format": "webvtt", "default": true}],
+  "captions": {"cea608": {"lang": "en"}},
   "ads": {"recurring": {"everySeconds": 300, "durationSeconds": 30, "offsetSeconds": 60}}
 }`
 
@@ -157,6 +158,8 @@ func TestCreateStream(t *testing.T) {
 		{[]any{"spec", "audio", 0, "group"}, "main"},
 		{[]any{"spec", "subtitles", 0, "format"}, "webvtt"},
 		{[]any{"spec", "subtitles", 0, "default"}, true},
+		{[]any{"spec", "captions", "cea608", "channel"}, "CC1"},
+		{[]any{"spec", "captions", "cea608", "lang"}, "en"},
 	}
 	for _, c := range checks {
 		if got := get(r.body, c.path...); got != c.want {

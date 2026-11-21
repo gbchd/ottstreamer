@@ -150,6 +150,30 @@ func (e AudioCodec) Valid() bool {
 	}
 }
 
+// Defines values for CEA608Channel.
+const (
+	CC1 CEA608Channel = "CC1"
+	CC2 CEA608Channel = "CC2"
+	CC3 CEA608Channel = "CC3"
+	CC4 CEA608Channel = "CC4"
+)
+
+// Valid indicates whether the value is a known member of the CEA608Channel enum.
+func (e CEA608Channel) Valid() bool {
+	switch e {
+	case CC1:
+		return true
+	case CC2:
+		return true
+	case CC3:
+		return true
+	case CC4:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DASHAddressing.
 const (
 	Number         DASHAddressing = "number"
@@ -483,6 +507,24 @@ type BreakRequest struct {
 	ReplaceRecurring bool `json:"replaceRecurring,omitempty"`
 }
 
+// CEA608 defines model for CEA608.
+type CEA608 struct {
+	// Channel Default CC1
+	Channel CEA608Channel `json:"channel,omitempty"`
+
+	// Lang BCP 47 tag
+	Lang string `json:"lang"`
+}
+
+// CEA608Channel Default CC1
+type CEA608Channel string
+
+// Captions defines model for Captions.
+type Captions struct {
+	// Cea608 The subtitle text as CEA-608 pop-on captions inside the video; absent: none
+	Cea608 *CEA608 `json:"cea608,omitempty"`
+}
+
 // CreateStreamRequest defines model for CreateStreamRequest.
 type CreateStreamRequest struct {
 	Id   string `json:"id"`
@@ -669,9 +711,10 @@ type ReplaceStreamRequest struct {
 
 // Spec defines model for Spec.
 type Spec struct {
-	Ads   Ads     `json:"ads,omitempty"`
-	Audio []Audio `json:"audio"`
-	Dash  DASH    `json:"dash,omitempty"`
+	Ads      Ads      `json:"ads,omitempty"`
+	Audio    []Audio  `json:"audio"`
+	Captions Captions `json:"captions,omitempty"`
+	Dash     DASH     `json:"dash,omitempty"`
 
 	// Faults 0-16 rules; seed the active rules at each start
 	Faults  []FaultRule   `json:"faults,omitempty"`

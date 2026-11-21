@@ -74,6 +74,9 @@ func toSpec(in Spec) stream.Spec {
 			ID: sub.Id, Lang: sub.Lang, Name: sub.Name, Format: stream.SubtitleFormat(sub.Format), Default: sub.Default,
 		})
 	}
+	if c := in.Captions.Cea608; c != nil {
+		s.CEA608 = &stream.CEA608{Channel: string(c.Channel), Lang: c.Lang}
+	}
 	return s
 }
 
@@ -123,6 +126,9 @@ func fromSpec(s stream.Spec) Spec {
 		out.Subtitles = append(out.Subtitles, Subtitle{
 			Id: sub.ID, Lang: sub.Lang, Name: sub.Name, Format: SubtitleFormat(sub.Format), Default: sub.Default,
 		})
+	}
+	if c := s.CEA608; c != nil {
+		out.Captions.Cea608 = &CEA608{Channel: CEA608Channel(c.Channel), Lang: c.Lang}
 	}
 	return out
 }

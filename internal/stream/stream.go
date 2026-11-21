@@ -116,6 +116,13 @@ type Subtitle struct {
 	Default        bool
 }
 
+// CEA608 carries the subtitle text inside the video as CEA-608 pop-on
+// captions (captions.cea608).
+type CEA608 struct {
+	Channel string // CC1 to CC4
+	Lang    string // BCP 47
+}
+
 // Recurring schedules break k at AST + Offset + k*Every, lasting Duration.
 type Recurring struct {
 	Every, Duration, Offset time.Duration
@@ -148,6 +155,7 @@ type Spec struct {
 	Video           []Video
 	Audio           []Audio
 	Subtitles       []Subtitle
+	CEA608          *CEA608 // nil: no captions
 	DASHAddressing  Addressing
 	Ads             Ads
 	Window          Window
@@ -165,6 +173,10 @@ func (s Spec) Clone() Spec {
 	s.Video = slices.Clone(s.Video)
 	s.Audio = slices.Clone(s.Audio)
 	s.Subtitles = slices.Clone(s.Subtitles)
+	if s.CEA608 != nil {
+		c := *s.CEA608
+		s.CEA608 = &c
+	}
 	s.Ads.HLS = slices.Clone(s.Ads.HLS)
 	s.Ads.DASH = slices.Clone(s.Ads.DASH)
 	if s.Ads.Recurring != nil {

@@ -471,6 +471,7 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Subtitle" }
           description: "0-8 text tracks; ids share the rendition namespace"
+        captions: { $ref: "#/components/schemas/Captions" }
         dash: { $ref: "#/components/schemas/DASH" }
         ads: { $ref: "#/components/schemas/Ads" }
         window: { $ref: "#/components/schemas/Window" }
@@ -519,6 +520,19 @@ components:
         name: { type: string }
         format: { type: string, enum: [webvtt, imsc1], description: "webvtt: .vtt in HLS, wvtt in DASH; imsc1: stpp in both" }
         default: { type: boolean, description: "At most one track" }
+    Captions:
+      type: object
+      properties:
+        cea608:
+          allOf: [{ $ref: "#/components/schemas/CEA608" }]
+          x-go-type-skip-optional-pointer: false
+          description: "The subtitle text as CEA-608 pop-on captions inside the video; absent: none"
+    CEA608:
+      type: object
+      required: [lang]
+      properties:
+        channel: { type: string, enum: [CC1, CC2, CC3, CC4], description: "Default CC1" }
+        lang: { type: string, description: BCP 47 tag }
     DASH:
       type: object
       properties:
