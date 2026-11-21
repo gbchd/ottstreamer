@@ -252,7 +252,14 @@ func (*Handler) multivariant(_ *http.Request, req request) ([]byte, error) {
 			})
 		}
 	}
-	slices.SortStableFunc(variants, func(x, y variant) int { return cmp.Compare(y.bandwidth, x.bandwidth) })
+	// The ladder is stored by codec preference (AV1, HEVC, H.264): keep that,
+	// highest bandwidth first within each codec.
+	rank := func(v variant) int {
+		return slices.IndexFunc(req.spec.Video, func(o stream.Video) bool { return o.Codec == v.video.Codec })
+	}
+	slices.SortStableFunc(variants, func(x, y variant) int {
+		return cmp.Or(cmp.Compare(rank(x), rank(y)), cmp.Compare(y.bandwidth, x.bandwidth))
+	})
 	for _, v := range variants {
 		fmt.Fprintf(&b, "#EXT-X-STREAM-INF:BANDWIDTH=%d,AVERAGE-BANDWIDTH=%d,CODECS=\"%s\",RESOLUTION=%dx%d,FRAME-RATE=%.3f,AUDIO=\"%s\"\n%s\n",
 			v.bandwidth*11/10, v.bandwidth, v.codecs, v.video.Width, v.video.Height, float64(req.spec.FPS), v.group, req.url(v.video.ID+".m3u8"))

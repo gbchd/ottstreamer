@@ -80,6 +80,7 @@ type descriptorXML struct {
 
 // adaptationSetXML keeps the schema's element order.
 type adaptationSetXML struct {
+	ID                int                 `xml:"id,attr"`
 	ContentType       string              `xml:"contentType,attr"`
 	MimeType          string              `xml:"mimeType,attr"`
 	Lang              string              `xml:"lang,attr,omitempty"`
@@ -89,6 +90,7 @@ type adaptationSetXML struct {
 	MaxHeight         int                 `xml:"maxHeight,attr,omitempty"`
 	FrameRate         int                 `xml:"frameRate,attr,omitempty"`
 	ChannelConfig     *descriptorXML      `xml:"AudioChannelConfiguration"`
+	Switching         *descriptorXML      `xml:"SupplementalProperty"`
 	InbandEventStream *descriptorXML      `xml:"InbandEventStream"`
 	Label             string              `xml:"Label,omitempty"`
 	Role              *descriptorXML      `xml:"Role"`
@@ -315,9 +317,10 @@ func fillEvent(e *eventXML, style string, cue []byte) error {
 	return nil
 }
 
-// adaptationSets returns one video AdaptationSet per codec, then one audio
-// AdaptationSet per (lang, channels, codec) whose bitrate tiers become
-// Representations.
+// adaptationSets returns one video AdaptationSet per codec, linked by
+// adaptation-set-switching, then one audio AdaptationSet per (lang,
+// channels, codec) whose bitrate tiers become Representations. Set ids
+// count from 1.
 func (req request) adaptationSets(o mpdOptions, sp span) []adaptationSetXML {
 	var sets []adaptationSetXML
 	index := map[string]int{}
@@ -325,6 +328,7 @@ func (req request) adaptationSets(o mpdOptions, sp span) []adaptationSetXML {
 		i, ok := index[key]
 		if !ok {
 			i, index[key] = len(sets), len(sets)
+			as.ID = i + 1
 			sets = append(sets, as)
 		}
 		sets[i].Representations = append(sets[i].Representations, rep)
@@ -343,6 +347,18 @@ func (req request) adaptationSets(o mpdOptions, sp span) []adaptationSetXML {
 			ID: v.ID, Codecs: t.Codec, Width: v.Width, Height: v.Height, Bandwidth: v.BitrateKbps * 1000,
 		})
 		set.MaxWidth, set.MaxHeight = max(set.MaxWidth, v.Width), max(set.MaxHeight, v.Height)
+	}
+	// Video sets come first: ids 1..len(sets). Each one lists the others.
+	if video := len(sets); video > 1 {
+		for i := range sets {
+			var others []string
+			for j := range video {
+				if j != i {
+					others = append(others, strconv.Itoa(j+1))
+				}
+			}
+			sets[i].Switching = &descriptorXML{SchemeIDURI: "urn:mpeg:dash:adaptation-set-switching:2016", Value: strings.Join(others, ",")}
+		}
 	}
 	for _, a := range req.spec.Audio {
 		t, _ := req.rt.Track(a.ID)
@@ -364,7 +380,7 @@ func (req request) adaptationSets(o mpdOptions, sp span) []adaptationSetXML {
 }
 
 func channelConfig(a stream.Audio) *descriptorXML {
-	if a.Codec == stream.CodecAC3 {
+	if a.Codec == stream.CodecAC3 || a.Codec == stream.CodecEAC3 {
 		masks := map[int]string{1: "4000", 2: "A000", 6: "F801"}
 		return &descriptorXML{SchemeIDURI: "tag:dolby.com,2014:dash:audio_channel_configuration:2011", Value: masks[a.Channels]}
 	}

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -42,7 +43,8 @@ var (
 // fakeEncoder builds tracks with the codec strings liveffmpeg reports.
 type fakeEncoder struct{}
 
-var codecs = map[string]string{"720p": "avc1.64001F", "360p": "avc1.64001E", "en": "mp4a.40.2", "en-51": "ac-3"}
+var codecs = map[string]string{"720p": "avc1.64001F", "360p": "avc1.64001E", "en": "mp4a.40.2", "en-51": "ac-3",
+	"720p-hevc": "hvc1.1.6.L93.90", "720p-av1": "av01.0.05M.08", "en-ec3": "ec-3", "en-opus": "opus"}
 
 func (fakeEncoder) StartEpoch(_ context.Context, s stream.Stream) (map[string]live.Track, error) {
 	tracks := map[string]live.Track{}
@@ -172,9 +174,18 @@ func newHandler(t *testing.T, rules ...fault.Rule) http.Handler {
 	ts.Ads.Command, ts.Ads.SegmentationType = stream.CommandTimeSignal, "provider_ad"
 	hlsOnly := spec()
 	hlsOnly.Formats = []stream.Format{stream.FormatHLS}
+	multi := spec()
+	multi.Video = append(multi.Video,
+		stream.Video{ID: "720p-hevc", Codec: stream.CodecHEVC, Width: 1280, Height: 720, BitrateKbps: 2000},
+		stream.Video{ID: "720p-av1", Codec: stream.CodecAV1, Width: 1280, Height: 720, BitrateKbps: 1500})
+	multi.Audio = append(multi.Audio,
+		stream.Audio{ID: "en-ec3", Lang: "en", Name: "English E-AC-3", Channels: 6, BitrateKbps: 256, Codec: stream.CodecEAC3},
+		stream.Audio{ID: "en-opus", Lang: "en", Name: "English Opus", Channels: 2, BitrateKbps: 96, Codec: stream.CodecOpus})
+	multi.Normalize()
 	end := int64(497)
 
 	streams := fakeStreams{
+		"codecs":   running("codecs", multi, nil),
 		"demo":     running("demo", sp, nil),
 		"ts":       running("ts", ts, nil),
 		"hls-only": running("hls-only", hlsOnly, nil),
@@ -535,5 +546,63 @@ func TestMPD_TimelineMatchesSegments(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// Every codec gets its own video AdaptationSet, linked for switching, and
+// the multivariant playlist lists AV1, then HEVC, then H.264.
+func TestManifests_Codecs(t *testing.T) {
+	srv := newServer(t)
+	master := get(t, srv, "/live/codecs/master.m3u8?now="+nowMS).body
+	av1, hevc, avc := strings.Index(master, `CODECS="av01.0.05M.08,`), strings.Index(master, `CODECS="hvc1.1.6.L93.90,`), strings.Index(master, `CODECS="avc1.64001F,`)
+	if av1 < 0 || hevc < av1 || avc < hevc {
+		t.Errorf("master does not list AV1, HEVC, then H.264:\n%s", master)
+	}
+
+	var mpd struct {
+		Sets []struct {
+			ID        string `xml:"id,attr"`
+			Kind      string `xml:"contentType,attr"`
+			Switching *struct {
+				Value string `xml:"value,attr"`
+			} `xml:"SupplementalProperty"`
+			Inband *struct{} `xml:"InbandEventStream"`
+			Config struct {
+				Scheme string `xml:"schemeIdUri,attr"`
+				Value  string `xml:"value,attr"`
+			} `xml:"AudioChannelConfiguration"`
+			Reps []struct {
+				Codecs string `xml:"codecs,attr"`
+			} `xml:"Representation"`
+		} `xml:"Period>AdaptationSet"`
+	}
+	if err := xml.Unmarshal([]byte(get(t, srv, "/live/codecs/manifest.mpd?now="+nowMS).body), &mpd); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(mpd.Sets))
+	for _, set := range mpd.Sets {
+		line := set.ID + " " + set.Kind + " " + set.Reps[0].Codecs
+		if set.Switching != nil {
+			line += " switch=" + set.Switching.Value
+		}
+		if set.Kind == "video" && set.Inband == nil {
+			line += " no-inband"
+		}
+		if set.Config.Value != "" {
+			line += " " + set.Config.Scheme + "=" + set.Config.Value
+		}
+		got = append(got, line)
+	}
+	want := []string{
+		"1 video av01.0.05M.08 switch=2,3",
+		"2 video hvc1.1.6.L93.90 switch=1,3",
+		"3 video avc1.64001F switch=1,2",
+		"4 audio mp4a.40.2 urn:mpeg:mpegB:cicp:ChannelConfiguration=2",
+		"5 audio ac-3 tag:dolby.com,2014:dash:audio_channel_configuration:2011=F801",
+		"6 audio ec-3 tag:dolby.com,2014:dash:audio_channel_configuration:2011=F801",
+		"7 audio opus urn:mpeg:mpegB:cicp:ChannelConfiguration=2",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("adaptation sets:\n got %q\nwant %q", got, want)
 	}
 }

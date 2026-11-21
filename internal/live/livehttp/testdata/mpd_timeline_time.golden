@@ -28,7 +28,7 @@
         </scte35:Signal>
       </Event>
     </EventStream>
-    <AdaptationSet contentType="video" mimeType="video/mp4" segmentAlignment="true" startWithSAP="1" maxWidth="1280" maxHeight="720" frameRate="25">
+    <AdaptationSet id="1" contentType="video" mimeType="video/mp4" segmentAlignment="true" startWithSAP="1" maxWidth="1280" maxHeight="720" frameRate="25">
       <InbandEventStream schemeIdUri="urn:scte:scte35:2013:bin" value=""></InbandEventStream>
       <SegmentTemplate timescale="90000" media="$RepresentationID$/t/$Time$.m4s" initialization="$RepresentationID$/init.mp4">
         <SegmentTimeline>
@@ -38,7 +38,7 @@
       <Representation id="720p" codecs="avc1.64001F" width="1280" height="720" bandwidth="3000000"></Representation>
       <Representation id="360p" codecs="avc1.64001E" width="640" height="360" bandwidth="800000"></Representation>
     </AdaptationSet>
-    <AdaptationSet contentType="audio" mimeType="audio/mp4" lang="en" segmentAlignment="true">
+    <AdaptationSet id="2" contentType="audio" mimeType="audio/mp4" lang="en" segmentAlignment="true">
       <AudioChannelConfiguration schemeIdUri="urn:mpeg:mpegB:cicp:ChannelConfiguration" value="2"></AudioChannelConfiguration>
       <Label>English</Label>
       <Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"></Role>
@@ -56,7 +56,7 @@
       </SegmentTemplate>
       <Representation id="en" codecs="mp4a.40.2" audioSamplingRate="48000" bandwidth="128000"></Representation>
     </AdaptationSet>
-    <AdaptationSet contentType="audio" mimeType="audio/mp4" lang="en" segmentAlignment="true">
+    <AdaptationSet id="3" contentType="audio" mimeType="audio/mp4" lang="en" segmentAlignment="true">
       <AudioChannelConfiguration schemeIdUri="tag:dolby.com,2014:dash:audio_channel_configuration:2011" value="F801"></AudioChannelConfiguration>
       <Label>English 5.1</Label>
       <Role schemeIdUri="urn:mpeg:dash:role:2011" value="alternate"></Role>
