@@ -448,6 +448,10 @@ components:
         audio:
           type: array
           items: { $ref: "#/components/schemas/Audio" }
+        subtitles:
+          type: array
+          items: { $ref: "#/components/schemas/Subtitle" }
+          description: "0-8 text tracks; ids share the rendition namespace"
         dash: { $ref: "#/components/schemas/DASH" }
         ads: { $ref: "#/components/schemas/Ads" }
         window: { $ref: "#/components/schemas/Window" }
@@ -487,6 +491,15 @@ components:
         default: { type: boolean }
         ticHz: { type: integer, description: "Beep on odd seconds; default steps up per language" }
         tocHz: { type: integer, description: "Beep on even seconds; default steps up per language" }
+    Subtitle:
+      type: object
+      required: [id, lang, format]
+      properties:
+        id: { type: string }
+        lang: { type: string, description: BCP 47 tag }
+        name: { type: string }
+        format: { type: string, enum: [webvtt, imsc1], description: "webvtt: .vtt in HLS, wvtt in DASH; imsc1: stpp in both" }
+        default: { type: boolean, description: "At most one track" }
     DASH:
       type: object
       properties:

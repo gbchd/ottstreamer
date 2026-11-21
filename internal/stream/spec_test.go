@@ -79,6 +79,12 @@ func TestSpec_Validate(t *testing.T) {
 		{"recurring", func(s *stream.Spec) {
 			s.Ads.Recurring = &stream.Recurring{Every: 300 * time.Second, Duration: 30 * time.Second, Offset: 60 * time.Second}
 		}, nil},
+		{"subtitles", func(s *stream.Spec) {
+			s.Subtitles = []stream.Subtitle{
+				{ID: "sub-en", Lang: "en", Format: stream.SubtitleWebVTT, Default: true},
+				{ID: "sub-fr", Lang: "fr", Format: stream.SubtitleIMSC1},
+			}
+		}, nil},
 		{"two audio groups", func(s *stream.Spec) {
 			s.Audio = append(s.Audio, stream.Audio{ID: "en-low", Lang: "en", Channels: 2, BitrateKbps: 64, Group: "low", Default: true})
 		}, nil},
@@ -134,6 +140,20 @@ func TestSpec_Validate(t *testing.T) {
 			s.Audio = append(s.Audio, stream.Audio{ID: "fr-low", Lang: "fr", Channels: 2, BitrateKbps: 64, Group: "low", Default: true, TicHz: 640, TocHz: 2000})
 		}, []string{"spec.audio"}},
 		{"bad tone", func(s *stream.Spec) { s.Audio[0].TicHz = 30000 }, []string{"spec.audio[0].ticHz"}},
+		{"9 subtitle tracks", func(s *stream.Spec) {
+			for i := range 9 {
+				s.Subtitles = append(s.Subtitles, stream.Subtitle{ID: "sub-" + string(rune('a'+i)), Lang: "en", Format: stream.SubtitleWebVTT})
+			}
+		}, []string{"spec.subtitles"}},
+		{"bad subtitle track", func(s *stream.Spec) {
+			s.Subtitles = []stream.Subtitle{{ID: "720p", Lang: "english!", Format: "srt"}}
+		}, []string{"spec.subtitles[0].id", "spec.subtitles[0].lang", "spec.subtitles[0].format"}},
+		{"two default subtitle tracks", func(s *stream.Spec) {
+			s.Subtitles = []stream.Subtitle{
+				{ID: "sub-en", Lang: "en", Format: stream.SubtitleWebVTT, Default: true},
+				{ID: "sub-fr", Lang: "fr", Format: stream.SubtitleIMSC1, Default: true},
+			}
+		}, []string{"spec.subtitles"}},
 		{"bad addressing", func(s *stream.Spec) { s.DASHAddressing = "time-duration" }, []string{"spec.dash.addressing"}},
 		{"lead under 2 segments", func(s *stream.Spec) { s.Ads.Lead = 3 * time.Second }, []string{"spec.ads.leadSeconds"}},
 		{"lead over 60 s", func(s *stream.Spec) { s.Ads.Lead = 61 * time.Second }, []string{"spec.ads.leadSeconds"}},

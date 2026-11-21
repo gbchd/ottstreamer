@@ -179,6 +179,7 @@ func (s Spec) validate(v *ValidationError) {
 	ids := map[string]bool{}
 	s.validateVideo(v, ids)
 	s.validateAudio(v, ids)
+	s.validateSubtitles(v, ids)
 	switch s.DASHAddressing {
 	case AddressingNumber, AddressingTimelineTime, AddressingTimelineNumber:
 	default:
@@ -356,6 +357,29 @@ func (s Spec) validateAudio(v *ValidationError, ids map[string]bool) {
 		if !slices.Equal(first, slices.SortedFunc(slices.Values(groups[g]), cmpTrack)) {
 			v.add("spec.audio", fmt.Sprintf("group %q must offer the same tracks (lang, channels, codec) as group %q for HLS", g, order[0]))
 		}
+	}
+}
+
+func (s Spec) validateSubtitles(v *ValidationError, ids map[string]bool) {
+	if len(s.Subtitles) > 8 {
+		v.add("spec.subtitles", "must have at most 8 tracks")
+	}
+	defaults := 0
+	for i, sub := range s.Subtitles {
+		path := fmt.Sprintf("spec.subtitles[%d]", i)
+		checkID(v, ids, path, sub.ID)
+		if !langPattern.MatchString(sub.Lang) {
+			v.add(path+".lang", "must be a BCP 47 language tag")
+		}
+		if sub.Format != SubtitleWebVTT && sub.Format != SubtitleIMSC1 {
+			v.add(path+".format", `must be "webvtt" or "imsc1"`)
+		}
+		if sub.Default {
+			defaults++
+		}
+	}
+	if defaults > 1 {
+		v.add("spec.subtitles", "at most one track can be the default")
 	}
 }
 

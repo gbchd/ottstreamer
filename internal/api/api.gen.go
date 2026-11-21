@@ -312,6 +312,24 @@ func (e State) Valid() bool {
 	}
 }
 
+// Defines values for SubtitleFormat.
+const (
+	Imsc1  SubtitleFormat = "imsc1"
+	Webvtt SubtitleFormat = "webvtt"
+)
+
+// Valid indicates whether the value is a known member of the SubtitleFormat enum.
+func (e SubtitleFormat) Valid() bool {
+	switch e {
+	case Imsc1:
+		return true
+	case Webvtt:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for VideoBitDepth.
 const (
 	N10 VideoBitDepth = 10
@@ -639,6 +657,9 @@ type Spec struct {
 	// SegmentSeconds 0.5-10, a whole number of frames; default 2
 	SegmentSeconds float64 `json:"segmentSeconds,omitempty"`
 
+	// Subtitles 0-8 text tracks; ids share the rendition namespace
+	Subtitles []Subtitle `json:"subtitles,omitempty"`
+
 	// Timezone IANA zone of the burnt-in clock; default UTC
 	Timezone string  `json:"timezone,omitempty"`
 	Video    []Video `json:"video"`
@@ -700,6 +721,23 @@ type StreamPosition struct {
 	Now      time.Time `json:"now"`
 	State    State     `json:"state"`
 }
+
+// Subtitle defines model for Subtitle.
+type Subtitle struct {
+	// Default At most one track
+	Default bool `json:"default,omitempty"`
+
+	// Format webvtt: .vtt in HLS, wvtt in DASH; imsc1: stpp in both
+	Format SubtitleFormat `json:"format"`
+	Id     string         `json:"id"`
+
+	// Lang BCP 47 tag
+	Lang string `json:"lang"`
+	Name string `json:"name,omitempty"`
+}
+
+// SubtitleFormat webvtt: .vtt in HLS, wvtt in DASH; imsc1: stpp in both
+type SubtitleFormat string
 
 // Timeline defines model for Timeline.
 type Timeline struct {

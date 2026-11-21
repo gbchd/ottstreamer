@@ -303,7 +303,7 @@ func TestService_events(t *testing.T) {
 		}
 	}
 	// changed lists the fields of Spec one by one.
-	if n := reflect.TypeFor[stream.Spec]().NumField(); n != 12 {
+	if n := reflect.TypeFor[stream.Spec]().NumField(); n != 13 {
 		t.Errorf("Spec has %d fields: add the new ones to changed in service.go, then update this count", n)
 	}
 }

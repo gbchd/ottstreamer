@@ -69,6 +69,11 @@ func toSpec(in Spec) stream.Spec {
 			Codec: stream.AudioCodec(a.Codec), Group: a.Group, Default: a.Default, TicHz: a.TicHz, TocHz: a.TocHz,
 		})
 	}
+	for _, sub := range in.Subtitles {
+		s.Subtitles = append(s.Subtitles, stream.Subtitle{
+			ID: sub.Id, Lang: sub.Lang, Name: sub.Name, Format: stream.SubtitleFormat(sub.Format), Default: sub.Default,
+		})
+	}
 	return s
 }
 
@@ -112,6 +117,11 @@ func fromSpec(s stream.Spec) Spec {
 		out.Audio = append(out.Audio, Audio{
 			Id: a.ID, Lang: a.Lang, Name: a.Name, Channels: AudioChannels(a.Channels), BitrateKbps: a.BitrateKbps,
 			Codec: AudioCodec(a.Codec), Group: a.Group, Default: a.Default, TicHz: a.TicHz, TocHz: a.TocHz,
+		})
+	}
+	for _, sub := range s.Subtitles {
+		out.Subtitles = append(out.Subtitles, Subtitle{
+			Id: sub.ID, Lang: sub.Lang, Name: sub.Name, Format: SubtitleFormat(sub.Format), Default: sub.Default,
 		})
 	}
 	return out

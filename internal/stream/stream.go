@@ -50,6 +50,16 @@ func (c AudioCodec) FrameSize() int {
 	return 0
 }
 
+// SubtitleFormat is how a subtitle track is packaged.
+type SubtitleFormat string
+
+const (
+	// SubtitleWebVTT is plain WebVTT segments in HLS and wvtt fMP4 in DASH.
+	SubtitleWebVTT SubtitleFormat = "webvtt"
+	// SubtitleIMSC1 is stpp fMP4 (one TTML document per segment) in both.
+	SubtitleIMSC1 SubtitleFormat = "imsc1"
+)
+
 // Addressing is a DASH SegmentTemplate mode.
 type Addressing string
 
@@ -98,6 +108,14 @@ type Audio struct {
 	TicHz, TocHz   int
 }
 
+// Subtitle is one text track. Its cues repeat the burnt-in clock, one per
+// second.
+type Subtitle struct {
+	ID, Lang, Name string
+	Format         SubtitleFormat
+	Default        bool
+}
+
 // Recurring schedules break k at AST + Offset + k*Every, lasting Duration.
 type Recurring struct {
 	Every, Duration, Offset time.Duration
@@ -129,6 +147,7 @@ type Spec struct {
 	RenditionLabel  bool // overlay.renditionLabel
 	Video           []Video
 	Audio           []Audio
+	Subtitles       []Subtitle
 	DASHAddressing  Addressing
 	Ads             Ads
 	Window          Window
@@ -145,6 +164,7 @@ func (s Spec) Clone() Spec {
 	s.Formats = slices.Clone(s.Formats)
 	s.Video = slices.Clone(s.Video)
 	s.Audio = slices.Clone(s.Audio)
+	s.Subtitles = slices.Clone(s.Subtitles)
 	s.Ads.HLS = slices.Clone(s.Ads.HLS)
 	s.Ads.DASH = slices.Clone(s.Ads.DASH)
 	if s.Ads.Recurring != nil {
