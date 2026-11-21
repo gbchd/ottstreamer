@@ -95,7 +95,7 @@ func run(logger *slog.Logger) error {
 	var ids ulid.Generator
 	events := event.NewService(eventmem.NewRepository(eventsPerStream), time.Now, ids.New, countEvents(met), logger)
 	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), events, time.Now)
-	faults := fault.NewService(faultmem.NewRepository(), events, met, time.Now, func() int { return rand.IntN(100) }) //nolint:gosec // fault draws need no crypto
+	faults := fault.NewService(faultmem.NewRepository(), faultStreams{repo}, events, met, time.Now, func() int { return rand.IntN(100) }) //nolint:gosec // fault draws need no crypto
 	mgr := live.NewManager(enc, livemp4.NewWriter(), breaks, events, cfg.CacheBytes, cfg.ProducerParallelism, met, time.Now, logger)
 	defer mgr.Close() // after the server has drained, before the tmp dir goes
 	streams := stream.NewService(repo, repo, mgr, breaks, faults, events, time.Now)
@@ -227,8 +227,28 @@ func countByState(ctx context.Context, repo stream.Repository) (map[string]int, 
 	return counts, nil
 }
 
-// housekeep moves ended streams past their retention to stopped and records
-// the fault.injected events of every minute that is over.
+// faultStreams is what fault rules read of a stream, from the stream
+// repository: its current epoch and the renditions of its spec.
+type faultStreams struct{ repo stream.Repository }
+
+func (f faultStreams) Stream(ctx context.Context, id string) (fault.Stream, error) {
+	s, err := f.repo.Get(ctx, id)
+	if errors.Is(err, stream.ErrNotFound) {
+		return fault.Stream{}, nil // deleting a stream clears its rules once it is gone
+	}
+	if err != nil {
+		return fault.Stream{}, err
+	}
+	out := fault.Stream{Renditions: s.Spec.RenditionIDs()}
+	if e := s.Status.Epoch; e != nil {
+		out.Epoch = e.Number
+	}
+	return out, nil
+}
+
+// housekeep moves ended streams past their retention to stopped, records
+// the fault.injected events of every minute that is over and prunes expired
+// fault rules.
 func housekeep(ctx context.Context, streams *stream.Service, faults *fault.Service, logger *slog.Logger) {
 	tick := time.NewTicker(10 * time.Second)
 	defer tick.Stop()
@@ -241,6 +261,15 @@ func housekeep(ctx context.Context, streams *stream.Service, faults *fault.Servi
 				logger.ErrorContext(ctx, "expire ended streams", "error", err)
 			}
 			faults.Flush(ctx)
+			list, err := streams.List(ctx)
+			if err != nil {
+				logger.ErrorContext(ctx, "list streams", "error", err)
+			}
+			for _, s := range list {
+				if err := faults.Prune(ctx, s.ID); err != nil {
+					logger.ErrorContext(ctx, "prune fault rules", "stream", s.ID, "error", err)
+				}
+			}
 		}
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"ottstreamer/internal/event/eventmem"
 	"ottstreamer/internal/fault"
 	"ottstreamer/internal/fault/faultmem"
+	"ottstreamer/internal/fault/faulttest"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/stream/streammem"
 	"ottstreamer/internal/ulid"
@@ -64,7 +65,7 @@ func serve(t *testing.T, wrap func(http.Handler) http.Handler) (*httptest.Server
 	logger := slog.New(slog.DiscardHandler)
 	events := event.NewService(eventmem.NewRepository(100), clock, ids.New, func(event.Event) {}, logger)
 	breaks := adbreak.NewService(repo, adbreakmem.NewRepository(), adbreakscte35.NewEncoder(), events, clock)
-	faults := fault.NewService(faultmem.NewRepository(), events, nopMetrics{}, clock, func() int { return 0 })
+	faults := fault.NewService(faultmem.NewRepository(), faulttest.Streams{Renditions: []string{"720p", "en", "sub-en"}}, events, nopMetrics{}, clock, func() int { return 0 })
 	svc := stream.NewService(repo, repo, nopRuntimes{}, breaks, faults, events, clock)
 	mux := http.NewServeMux()
 	api.Register(mux, svc, breaks, events, faults, faults, clock, logger)

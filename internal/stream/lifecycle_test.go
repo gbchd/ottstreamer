@@ -1,6 +1,7 @@
 package stream_test
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"slices"
@@ -100,6 +101,53 @@ func TestService_Start_SeedsFaults(t *testing.T) {
 	s := e.start(t, "demo")
 	if got := e.faults.replaced["demo"]; !reflect.DeepEqual(got, s.Spec.Faults) || len(got) != 1 {
 		t.Errorf("seeded %+v, want the spec's rules %+v", got, s.Spec.Faults)
+	}
+}
+
+// seedFaults reads the stream's stored epoch when Start seeds its rules.
+type seedFaults struct {
+	fakeFaults
+	repo  stream.Repository
+	epoch int
+	err   error
+}
+
+func (f *seedFaults) Replace(ctx context.Context, id string, rules []fault.Rule) ([]fault.Rule, error) {
+	s, err := f.repo.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	f.epoch = 0
+	if ep := s.Status.Epoch; ep != nil {
+		f.epoch = ep.Number
+	}
+	return rules, f.err
+}
+
+// The seed's faults.updated carries the new epoch: Start saves it first.
+func TestService_Start_SeedsFaultsInNewEpoch(t *testing.T) {
+	e := newEnv(t)
+	seed := &seedFaults{repo: e.repo}
+	e.svc = stream.NewService(e.repo, e.repo, e.rt, e.breaks, seed, e.events, func() time.Time { return e.now })
+	e.create(t, "demo")
+	for want := 1; want <= 2; want++ {
+		e.start(t, "demo")
+		if seed.epoch != want {
+			t.Errorf("start %d seeded in epoch %d", want, seed.epoch)
+		}
+		if _, err := e.svc.Stop(t.Context(), "demo"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	boom := errors.New("fault store down")
+	seed.err = boom
+	e.rt.launched = nil
+	if _, err := e.svc.Start(t.Context(), "demo", nil); !errors.Is(err, boom) {
+		t.Fatalf("Start: %v, want the seed error", err)
+	}
+	if s, _ := e.svc.Get(t.Context(), "demo"); s.Status.State != stream.StateStopped || len(e.rt.launched) != 0 {
+		t.Errorf("after a failed seed: state %s, launched %v; want stopped, none", s.Status.State, e.rt.launched)
 	}
 }
 

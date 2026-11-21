@@ -36,6 +36,11 @@ func TestFaults(t *testing.T) {
 	if get(r.body, "fields", 0, "field") != "faults[0].percent" {
 		t.Errorf("422 = %s", r.raw)
 	}
+	r = do(t, srv, http.MethodPut, "/api/streams/demo/faults", `[{"id": "x", "match": {"kind": "segment", "renditions": ["720p", "cc1"]}, "action": {"delayMs": 100}}]`)
+	expect(t, r, http.StatusUnprocessableEntity)
+	if get(r.body, "fields", 0, "field") != "faults[0].match.renditions[1]" {
+		t.Errorf("unknown rendition: 422 = %s", r.raw)
+	}
 
 	put := `[{"id": "slow", "match": {"kind": "segment", "renditions": ["720p"], "segments": {"from": 10, "to": 20}},
 		"ttlSeconds": 60, "action": {"delayMs": 3000}}]`
@@ -80,6 +85,12 @@ func TestSpecFaults(t *testing.T) {
 	expect(t, r, http.StatusUnprocessableEntity)
 	if get(r.body, "fields", 0, "field") != "spec.faults[0].action.gap" {
 		t.Errorf("422 = %s", r.raw)
+	}
+	unknown := strings.Replace(demo, `"ads":`, `"faults": [{"id": "gone", "match": {"kind": "segment", "renditions": ["1080p"]}, "action": {"status": 404}}], "ads":`, 1)
+	r = do(t, srv, http.MethodPost, "/api/streams", unknown)
+	expect(t, r, http.StatusUnprocessableEntity)
+	if get(r.body, "fields", 0, "field") != "spec.faults[0].match.renditions[0]" {
+		t.Errorf("unknown rendition: 422 = %s", r.raw)
 	}
 
 	expect(t, do(t, srv, http.MethodPost, "/api/streams", strings.Replace(demo, `"ads":`, `"faults": `+rule+`, "ads":`, 1)), http.StatusCreated)

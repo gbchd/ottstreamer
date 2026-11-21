@@ -24,9 +24,6 @@ func (svc *Service) Start(ctx context.Context, id string, ast *time.Time) (Strea
 	if s.Status.State == StateRunning {
 		return Stream{}, errConflict(s)
 	}
-	if _, err := svc.faults.Replace(ctx, id, s.Spec.Faults); err != nil {
-		return Stream{}, fmt.Errorf("seed faults of %s: %w", id, err)
-	}
 	wasEnded := s.Status.State == StateEnded
 	number := 1
 	if s.Status.Epoch != nil {
@@ -44,16 +41,25 @@ func (svc *Service) Start(ctx context.Context, id string, ast *time.Time) (Strea
 	if wasEnded {
 		svc.rt.Drop(id)
 	}
+	// Seeded once the new epoch is saved, so faults.updated carries it.
+	if _, err := svc.faults.Replace(ctx, id, s.Spec.Faults); err != nil {
+		return Stream{}, svc.abortStart(ctx, s, fmt.Errorf("seed faults of %s: %w", id, err))
+	}
 	if err := svc.rt.Launch(ctx, s); err != nil {
-		s.Status.State = StateStopped
-		s.UpdatedAt = svc.now()
-		if _, serr := svc.repo.Save(ctx, s, s.Version); serr != nil {
-			err = errors.Join(err, fmt.Errorf("mark stopped: %w", serr))
-		}
-		return Stream{}, fmt.Errorf("launch %s: %w", id, err)
+		return Stream{}, svc.abortStart(ctx, s, fmt.Errorf("launch %s: %w", id, err))
 	}
 	svc.record(ctx, s, event.StreamStarted, nil, map[string]any{"ast": start})
 	return s, nil
+}
+
+// abortStart marks s, saved as running, stopped again after err.
+func (svc *Service) abortStart(ctx context.Context, s Stream, err error) error {
+	s.Status.State = StateStopped
+	s.UpdatedAt = svc.now()
+	if _, serr := svc.repo.Save(ctx, s, s.Version); serr != nil {
+		err = errors.Join(err, fmt.Errorf("mark stopped: %w", serr))
+	}
+	return err
 }
 
 func (svc *Service) ast(ast *time.Time) (time.Time, error) {

@@ -138,7 +138,7 @@ func (s Spec) normalized(v *ValidationError) Spec {
 	c.setDefaults()
 	c.validate(v)
 	c.sortVideo()
-	rules, err := fault.Normalized(c.Faults)
+	rules, err := fault.NormalizedFor(c.Faults, c.RenditionIDs())
 	if ferr, ok := errors.AsType[*fault.ValidationError](err); ok {
 		for _, f := range ferr.Fields {
 			v.add("spec."+f.Field, f.Message)
@@ -146,6 +146,22 @@ func (s Spec) normalized(v *ValidationError) Spec {
 	}
 	c.Faults = rules
 	return c
+}
+
+// RenditionIDs returns the IDs of the video, audio and subtitle renditions,
+// the names fault rules match. CEA-608 captions ride inside the video.
+func (s Spec) RenditionIDs() []string {
+	ids := make([]string, 0, len(s.Video)+len(s.Audio)+len(s.Subtitles))
+	for _, v := range s.Video {
+		ids = append(ids, v.ID)
+	}
+	for _, a := range s.Audio {
+		ids = append(ids, a.ID)
+	}
+	for _, sub := range s.Subtitles {
+		ids = append(ids, sub.ID)
+	}
+	return ids
 }
 
 // AudioAligned reports whether every audio segment has the same length: the

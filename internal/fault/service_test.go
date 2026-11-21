@@ -2,6 +2,7 @@ package fault_test
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"ottstreamer/internal/event/eventtest"
 	"ottstreamer/internal/fault"
 	"ottstreamer/internal/fault/faultmem"
+	"ottstreamer/internal/fault/faulttest"
 )
 
 var t0 = time.Date(2026, 11, 6, 18, 30, 0, 0, time.UTC)
@@ -48,8 +50,11 @@ func (c *counter) FaultInjected(streamID, rule, action string) {
 
 func newService(draw func() int) (*fault.Service, *eventtest.Recorder, *counter, *clock) {
 	rec, met, clk := &eventtest.Recorder{}, &counter{}, &clock{t: t0}
-	return fault.NewService(faultmem.NewRepository(), rec, met, clk.now, draw), rec, met, clk
+	return fault.NewService(faultmem.NewRepository(), streams, rec, met, clk.now, draw), rec, met, clk
 }
+
+// streams answers for every stream: in epoch 3, with these renditions.
+var streams = faulttest.Streams{Epoch: 3, Renditions: []string{"720p", "en", "sub-en"}}
 
 func noDraw() int { panic("draw called for a sticky rule") }
 
@@ -70,8 +75,8 @@ func TestService_Replace(t *testing.T) {
 		t.Errorf("Replace = %+v, want defaults and expiry", got)
 	}
 	ev := rec.Events()
-	if len(ev) != 1 || ev[0].Type != event.FaultsUpdated || ev[0].Actor != "api:qa" || !slices.Equal(ev[0].Data["rules"].([]string), []string{"a", "b"}) {
-		t.Errorf("events = %+v, want one faults.updated by api:qa", ev)
+	if len(ev) != 1 || ev[0].Type != event.FaultsUpdated || ev[0].Actor != "api:qa" || ev[0].Epoch != 3 || !slices.Equal(ev[0].Data["rules"].([]string), []string{"a", "b"}) {
+		t.Errorf("events = %+v, want one faults.updated by api:qa in epoch 3", ev)
 	}
 
 	clk.add(time.Minute)
@@ -98,6 +103,64 @@ func TestService_Replace_Invalid(t *testing.T) {
 	}
 	if len(rec.Events()) != 0 {
 		t.Error("an invalid rule set recorded an event")
+	}
+}
+
+func TestService_Replace_UnknownRendition(t *testing.T) {
+	svc, rec, _, _ := newService(noDraw)
+	r := segmentRule("a", 0)
+	r.Match.Renditions = []string{"720p", "en", "sub-en", "1080p"}
+	_, err := svc.Replace(t.Context(), "demo", []fault.Rule{r})
+	verr, ok := errors.AsType[*fault.ValidationError](err)
+	if !ok || !errors.Is(err, fault.ErrInvalid) || len(verr.Fields) != 1 || verr.Fields[0].Field != "faults[0].match.renditions[3]" {
+		t.Fatalf("Replace = %v, want one field error at faults[0].match.renditions[3]", err)
+	}
+	if len(rec.Events()) != 0 {
+		t.Error("a rejected rule set recorded an event")
+	}
+}
+
+func TestService_Prune(t *testing.T) {
+	svc, rec, _, clk := newService(noDraw)
+	ctx := event.WithActor(t.Context(), "api:qa")
+	soon, later := segmentRule("soon", 0), segmentRule("later", 0)
+	soon.TTL, later.TTL = time.Minute, 3*time.Minute
+	if _, err := svc.Replace(ctx, "demo", []fault.Rule{soon, segmentRule("kept", 0), later}); err != nil {
+		t.Fatal(err)
+	}
+	rec.Events()
+
+	prune := func() []event.Event {
+		t.Helper()
+		if err := svc.Prune(ctx, "demo"); err != nil {
+			t.Fatal(err)
+		}
+		return rec.Events()
+	}
+	if ev := prune(); len(ev) != 0 {
+		t.Errorf("Prune before any expiry recorded %+v", ev)
+	}
+
+	clk.add(time.Minute)
+	ev := prune()
+	if len(ev) != 1 || ev[0].Type != event.FaultsUpdated || ev[0].Actor != event.System || ev[0].Epoch != 3 ||
+		!slices.Equal(ev[0].Data["rules"].([]string), []string{"kept", "later"}) || !slices.Equal(ev[0].Data["expired"].([]string), []string{"soon"}) {
+		t.Errorf("events = %+v, want one faults.updated by system: rules kept, later; expired soon", ev)
+	}
+	if ev := prune(); len(ev) != 0 {
+		t.Errorf("second Prune recorded %+v", ev)
+	}
+
+	// Rules hides a rule that expired since the last Prune.
+	clk.add(2 * time.Minute)
+	if active, err := svc.Rules(t.Context(), "demo"); err != nil || len(active) != 1 || active[0].ID != "kept" {
+		t.Errorf("Rules = %+v, %v; want only kept", active, err)
+	}
+	if ev := prune(); len(ev) != 1 || !slices.Equal(ev[0].Data["rules"].([]string), []string{"kept"}) || !slices.Equal(ev[0].Data["expired"].([]string), []string{"later"}) {
+		t.Errorf("events = %+v, want later expired", ev)
+	}
+	if err := svc.Prune(t.Context(), "nope"); err != nil || len(rec.Events()) != 0 {
+		t.Errorf("Prune of a stream without rules = %v", err)
 	}
 }
 

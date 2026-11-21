@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"ottstreamer/internal/fault"
 	"ottstreamer/internal/stream"
 	"ottstreamer/internal/stream/streamtest"
 )
@@ -206,6 +207,22 @@ func TestSpec_Validate(t *testing.T) {
 				t.Errorf("invalid fields = %v, want %v (%v)", got, tt.fields, err)
 			}
 		})
+	}
+}
+
+func TestSpec_FaultRenditions(t *testing.T) {
+	e := newEnv(t)
+	spec := streamtest.Spec()
+	spec.Subtitles = []stream.Subtitle{{ID: "sub-en", Lang: "en", Format: stream.SubtitleWebVTT}}
+	spec.CEA608 = &stream.CEA608{Lang: "en"}
+	spec.Faults = []fault.Rule{{ID: "slow", Match: fault.Match{Kind: fault.KindSegment, Renditions: []string{"360p", "en", "sub-en", "cc1"}}, Action: fault.Action{Delay: time.Second}}}
+	_, err := e.svc.Create(t.Context(), stream.Stream{ID: "demo", Spec: spec})
+	if got, want := fields(err), []string{"spec.faults[0].match.renditions[3]"}; !slices.Equal(got, want) {
+		t.Errorf("unknown rendition: fields %v, want %v (%v)", got, want, err)
+	}
+	spec.Faults[0].Match.Renditions = spec.Faults[0].Match.Renditions[:3]
+	if _, err := e.svc.Create(t.Context(), stream.Stream{ID: "demo", Spec: spec}); err != nil {
+		t.Errorf("video, audio and subtitle renditions: %v", err)
 	}
 }
 

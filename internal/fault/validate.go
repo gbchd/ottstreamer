@@ -47,6 +47,18 @@ var statuses = []int{404, 410, 500, 503, 504}
 // Normalized returns a deep copy of rules with defaults filled in (percent
 // 100, mode sticky), or a *ValidationError naming every invalid field.
 func Normalized(rules []Rule) ([]Rule, error) {
+	return normalized(rules, nil)
+}
+
+// NormalizedFor is Normalized for the rules of a stream: every
+// match.renditions entry must also be one of renditions, the stream's
+// rendition IDs.
+func NormalizedFor(rules []Rule, renditions []string) ([]Rule, error) {
+	return normalized(rules, func(id string) bool { return slices.Contains(renditions, id) })
+}
+
+// normalized is Normalized; a non-nil known also checks match.renditions.
+func normalized(rules []Rule, known func(string) bool) ([]Rule, error) {
 	out := Clone(rules)
 	var v ValidationError
 	if len(out) > MaxRules {
@@ -68,6 +80,11 @@ func Normalized(rules []Rule) ([]Rule, error) {
 			v.add(path+".id", "duplicate rule id")
 		}
 		r.validate(&v, path)
+		for j, id := range r.Match.Renditions {
+			if known != nil && !known(id) {
+				v.add(fmt.Sprintf("%s.match.renditions[%d]", path, j), "must be a video, audio or subtitle rendition of the stream")
+			}
+		}
 	}
 	if len(v.Fields) > 0 {
 		return nil, &v

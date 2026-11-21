@@ -24,6 +24,7 @@ import (
 	"ottstreamer/internal/event/eventtest"
 	"ottstreamer/internal/fault"
 	"ottstreamer/internal/fault/faultmem"
+	"ottstreamer/internal/fault/faulttest"
 	"ottstreamer/internal/live"
 	"ottstreamer/internal/live/livehttp"
 	"ottstreamer/internal/stream"
@@ -223,7 +224,7 @@ func newHandler(t *testing.T, rules ...fault.Rule) http.Handler {
 	stopped.Status.State = stream.StateStopped // its runtime is still there
 	streams["stopped"] = stopped
 
-	faults := fault.NewService(faultmem.NewRepository(), &eventtest.Recorder{}, nopMetrics{}, clock, func() int { return 0 })
+	faults := fault.NewService(faultmem.NewRepository(), faulttest.Streams{Epoch: 1, Renditions: sp.RenditionIDs()}, &eventtest.Recorder{}, nopMetrics{}, clock, func() int { return 0 })
 	if _, err := faults.Replace(t.Context(), "demo", rules); err != nil {
 		t.Fatal(err)
 	}
