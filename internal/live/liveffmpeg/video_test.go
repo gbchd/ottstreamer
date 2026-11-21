@@ -21,6 +21,7 @@ func testStream(t testing.TB) stream.Stream {
 		{ID: "en-51", Lang: "en", Channels: 6, BitrateKbps: 384, Codec: stream.CodecAC3},
 		{ID: "en-ec3", Lang: "en", Channels: 6, BitrateKbps: 256, Codec: stream.CodecEAC3},
 		{ID: "en-opus", Lang: "en", Channels: 2, BitrateKbps: 96, Codec: stream.CodecOpus},
+		{ID: "en-opus-51", Lang: "en", Channels: 6, BitrateKbps: 256, Codec: stream.CodecOpus},
 	}...)
 }
 

@@ -45,7 +45,7 @@ var (
 type fakeEncoder struct{}
 
 var codecs = map[string]string{"720p": "avc1.64001F", "360p": "avc1.64001E", "en": "mp4a.40.2", "en-51": "ac-3",
-	"720p-hevc": "hvc1.1.6.L93.90", "720p-av1": "av01.0.05M.08", "en-ec3": "ec-3", "en-opus": "opus"}
+	"720p-hevc": "hvc1.1.6.L93.90", "720p-av1": "av01.0.05M.08", "en-ec3": "ec-3", "en-opus": "opus", "en-opus-51": "opus"}
 
 func (fakeEncoder) StartEpoch(_ context.Context, s stream.Stream) (map[string]live.Track, error) {
 	tracks := map[string]live.Track{}
@@ -190,7 +190,8 @@ func newHandler(t *testing.T, rules ...fault.Rule) http.Handler {
 		stream.Video{ID: "720p-av1", Codec: stream.CodecAV1, Width: 1280, Height: 720, BitrateKbps: 1500})
 	multi.Audio = append(multi.Audio,
 		stream.Audio{ID: "en-ec3", Lang: "en", Name: "English E-AC-3", Channels: 6, BitrateKbps: 256, Codec: stream.CodecEAC3},
-		stream.Audio{ID: "en-opus", Lang: "en", Name: "English Opus", Channels: 2, BitrateKbps: 96, Codec: stream.CodecOpus})
+		stream.Audio{ID: "en-opus", Lang: "en", Name: "English Opus", Channels: 2, BitrateKbps: 96, Codec: stream.CodecOpus},
+		stream.Audio{ID: "en-opus-51", Lang: "en", Name: "English Opus 5.1", Channels: 6, BitrateKbps: 256, Codec: stream.CodecOpus})
 	multi.Normalize()
 	end := int64(497)
 
@@ -578,6 +579,9 @@ func TestManifests_Codecs(t *testing.T) {
 	if av1 < 0 || hevc < av1 || avc < hevc {
 		t.Errorf("master does not list AV1, HEVC, then H.264:\n%s", master)
 	}
+	if !strings.Contains(master, `NAME="English Opus 5.1",CHANNELS="6",`) {
+		t.Errorf("master does not give 5.1 Opus 6 channels:\n%s", master)
+	}
 
 	var mpd struct {
 		Sets []struct {
@@ -621,8 +625,9 @@ func TestManifests_Codecs(t *testing.T) {
 		"5 audio ac-3 tag:dolby.com,2014:dash:audio_channel_configuration:2011=F801",
 		"6 audio ec-3 tag:dolby.com,2014:dash:audio_channel_configuration:2011=F801",
 		"7 audio opus urn:mpeg:mpegB:cicp:ChannelConfiguration=2",
-		"8 text wvtt",
-		"9 text stpp.ttml.im1t",
+		"8 audio opus urn:mpeg:mpegB:cicp:ChannelConfiguration=6",
+		"9 text wvtt",
+		"10 text stpp.ttml.im1t",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("adaptation sets:\n got %q\nwant %q", got, want)

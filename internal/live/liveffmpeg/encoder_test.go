@@ -55,8 +55,8 @@ func TestEncoder_StartEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tracks) != 6 {
-		t.Fatalf("got %d tracks, want 6", len(tracks))
+	if len(tracks) != 7 {
+		t.Fatalf("got %d tracks, want 7", len(tracks))
 	}
 	avc1 := regexp.MustCompile(`^avc1\.[0-9A-F]{6}$`)
 	for _, v := range s.Spec.Video {
@@ -82,6 +82,7 @@ func TestEncoder_StartEpoch(t *testing.T) {
 		{"en-51", "ac-3", 1536, 250, 6},
 		{"en-ec3", "ec-3", 1536, 250, 6},
 		{"en-opus", "opus", 960, 400, 2},
+		{"en-opus-51", "opus", 960, 400, 6},
 	}
 	for _, tt := range tests {
 		tr := tracks[tt.id]
@@ -100,9 +101,16 @@ func TestEncoder_StartEpoch(t *testing.T) {
 		case stsd.EC3 != nil:
 			channels, _ = stsd.EC3.Dec3.ChannelInfo()
 		case stsd.Opus != nil && stsd.Opus.Dops != nil:
-			channels = int(stsd.Opus.Dops.OutputChannelCount)
-			if stsd.Opus.Dops.PreSkip != 0 {
-				t.Errorf("%s: dOps pre-skip %d, want 0", tt.id, stsd.Opus.Dops.PreSkip)
+			channels = int(stsd.Opus.ChannelCount)
+			d := stsd.Opus.Dops
+			if d.PreSkip != 0 || int(d.OutputChannelCount) != channels {
+				t.Errorf("%s: dOps pre-skip %d, %d channels; want 0, %d", tt.id, d.PreSkip, d.OutputChannelCount, channels)
+			}
+			// RFC 7845 §5.1.1.2: 5.1 is family 1, 4 streams of which 2
+			// coupled (L/R, Ls/Rs) and C and LFE alone, in Vorbis order L C R Ls Rs LFE.
+			if channels == 6 && (d.ChannelMappingFamily != 1 || d.StreamCount != 4 || d.CoupledCount != 2 || !bytes.Equal(d.ChannelMapping, []byte{0, 4, 1, 2, 3, 5})) {
+				t.Errorf("%s: dOps family %d, %d streams, %d coupled, mapping %v; want 1, 4, 2, [0 4 1 2 3 5]",
+					tt.id, d.ChannelMappingFamily, d.StreamCount, d.CoupledCount, d.ChannelMapping)
 			}
 		}
 		if channels != tt.channels || init.Moov.Trak.Mdia.Mdhd.Timescale != 48000 {
